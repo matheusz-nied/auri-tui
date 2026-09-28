@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -16,6 +17,7 @@ use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
 use crate::event::{AppEvent, Events};
 use crate::git::{FileChange, GitBackend, Section};
+use crate::layout::{self, Sidebar};
 
 /// Owns the components, the focus state, the last-frame layout rects and the
 /// action queue. It is the *only* place where `GitBackend` is called: side
@@ -37,8 +39,13 @@ pub struct App {
     frame_area: Rect,
     queue: VecDeque<Action>,
     /// Rect each panel was rendered into last frame, used for click hit-tests.
+    /// Hidden (collapsed-sidebar) panels have no entry.
     rects: HashMap<PanelId, Rect>,
     status_bar: Rect,
+    /// Resizable/collapsible left column (commit input + changes list).
+    sidebar: Sidebar,
+    /// Area above the status bar from the last render; the divider lives in it.
+    main_area: Rect,
     /// Last status snapshot, for the "nothing staged" commit check.
     last_status: Vec<FileChange>,
     branch: String,
@@ -48,7 +55,23 @@ pub struct App {
     last_diff: Option<crate::git::DiffDoc>,
     /// (message, is_error) shown in the status bar.
     message: Option<(String, bool)>,
+    /// Last key/mouse event time — periodic refresh is deferred while input
+    /// is actively arriving (see `should_refresh`).
+    last_input: Option<Instant>,
+    /// Only redraw when something changed — idle timeouts skip `draw`.
+    dirty: bool,
     running: bool,
+}
+
+/// How long after the last input event a `Tick` may trigger `Action::Refresh`.
+/// During an input burst (trackpad scroll = dozens of events) the synchronous
+/// git calls must not interleave with event handling.
+const REFRESH_IDLE: Duration = Duration::from_secs(1);
+
+/// Whether a `Tick` may enqueue `Refresh`: only once input has been quiet for
+/// `REFRESH_IDLE` (or no input has ever arrived).
+fn should_refresh(last_input: Option<Instant>, now: Instant) -> bool {
+    last_input.is_none_or(|t| now.duration_since(t) >= REFRESH_IDLE)
 }
 
 impl App {
@@ -68,11 +91,15 @@ impl App {
             queue: VecDeque::new(),
             rects: HashMap::new(),
             status_bar: Rect::default(),
+            sidebar: Sidebar::default(),
+            main_area: Rect::default(),
             last_status: Vec::new(),
             branch: String::new(),
             selected: None,
             last_diff: None,
             message: None,
+            last_input: None,
+            dirty: true,
             running: true,
         }
     }
@@ -80,17 +107,43 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.enqueue(Action::Refresh);
         while self.running {
-            terminal.draw(|f| self.render(f))?;
-            match self.events.poll_event()? {
-                Some(AppEvent::Key(key)) => self.on_key(key),
-                Some(AppEvent::Mouse(mouse)) => self.on_mouse(mouse),
-                // Resize: the next draw picks up the new size automatically.
-                Some(AppEvent::Resize(..)) | None => {}
-                Some(AppEvent::Tick) => self.enqueue(Action::Refresh),
+            if let Some(ev) = self.events.poll_event()? {
+                self.handle_event(ev);
+                // A burst (trackpad scroll, held key) queues many events:
+                // handle them all, then draw once — not one render each.
+                for ev in self.events.drain()? {
+                    self.handle_event(ev);
+                }
             }
             self.dispatch();
+            if self.dirty {
+                terminal.draw(|f| self.render(f))?;
+                self.dirty = false;
+            }
         }
         Ok(())
+    }
+
+    fn handle_event(&mut self, ev: AppEvent) {
+        match ev {
+            AppEvent::Key(key) => {
+                self.last_input = Some(Instant::now());
+                self.dirty = true;
+                self.on_key(key);
+            }
+            AppEvent::Mouse(mouse) => {
+                self.last_input = Some(Instant::now());
+                self.dirty = true;
+                self.on_mouse(mouse);
+            }
+            // The next draw picks up the new size automatically.
+            AppEvent::Resize(..) => self.dirty = true,
+            AppEvent::Tick => {
+                if should_refresh(self.last_input, Instant::now()) {
+                    self.enqueue(Action::Refresh);
+                }
+            }
+        }
     }
 
     fn enqueue(&mut self, action: Action) {
@@ -99,8 +152,12 @@ impl App {
 
     /// Drain the queue: broadcast every action to all components (`update`)
     /// and execute the side-effecting ones locally. Actions emitted along the
-    /// way are processed in order.
+    /// way are processed in order. Any processed action marks the frame dirty.
     fn dispatch(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        self.dirty = true;
         while let Some(action) = self.queue.pop_front() {
             for (_, comp) in &mut self.components {
                 if let Some(next) = comp.update(&action) {
@@ -122,7 +179,11 @@ impl App {
             Action::Quit => self.running = false,
             Action::FocusNext => self.cycle_focus(1),
             Action::FocusPrev => self.cycle_focus(-1),
-            Action::Focus(id) => self.focus = id,
+            Action::Focus(id) => {
+                if self.panel_visible(id) {
+                    self.focus = id;
+                }
+            }
             Action::Refresh => {
                 match self.git.status() {
                     Ok(files) => self.enqueue(Action::StatusLoaded(files)),
@@ -239,6 +300,11 @@ impl App {
         }
     }
 
+    /// Whether a panel is on screen (only the diff survives a hidden sidebar).
+    fn panel_visible(&self, id: PanelId) -> bool {
+        self.sidebar.visible || id == PanelId::DiffView
+    }
+
     fn cycle_focus(&mut self, delta: isize) {
         let len = self.components.len() as isize;
         let cur = self
@@ -246,8 +312,24 @@ impl App {
             .iter()
             .position(|(id, _)| *id == self.focus)
             .unwrap_or(0) as isize;
-        let next = (cur + delta).rem_euclid(len);
+        let mut next = (cur + delta).rem_euclid(len);
+        // Skip hidden panels (collapsed sidebar).
+        for _ in 0..len {
+            if self.panel_visible(self.components[next as usize].0) {
+                break;
+            }
+            next = (next + delta).rem_euclid(len);
+        }
         self.focus = self.components[next as usize].0;
+    }
+
+    /// `b` — hide/show the sidebar, moving focus to the diff if it pointed at
+    /// a now-hidden panel.
+    fn toggle_sidebar(&mut self) {
+        self.sidebar.toggle();
+        if !self.sidebar.visible && matches!(self.focus, PanelId::CommitInput | PanelId::Changes) {
+            self.focus = PanelId::DiffView;
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -301,11 +383,26 @@ impl App {
                         self.enqueue(Action::Refresh);
                         return;
                     }
+                    KeyCode::Char('b') => {
+                        self.toggle_sidebar();
+                        return;
+                    }
+                    KeyCode::Char('[') => {
+                        self.sidebar.shrink(self.main_area.width);
+                        return;
+                    }
+                    KeyCode::Char(']') => {
+                        self.sidebar.grow(self.main_area.width);
+                        return;
+                    }
+                    // Reveal the sidebar when focusing a panel inside it.
                     KeyCode::Char('c') => {
+                        self.sidebar.visible = true;
                         self.enqueue(Action::Focus(PanelId::CommitInput));
                         return;
                     }
                     KeyCode::Char('1') => {
+                        self.sidebar.visible = true;
                         self.enqueue(Action::Focus(PanelId::Changes));
                         return;
                     }
@@ -336,6 +433,11 @@ impl App {
             if let Some(action) = overlay.handle_mouse(ev, self.frame_area) {
                 self.enqueue(action);
             }
+            return;
+        }
+        // The divider swallows presses/drags/releases that resize the sidebar;
+        // everything else falls through to normal panel routing.
+        if self.sidebar.on_mouse(&ev, self.main_area) {
             return;
         }
         let under = self
@@ -369,18 +471,35 @@ impl App {
         let area = f.area();
         self.frame_area = area;
         let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-        let main = Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
-            .split(vertical[0]);
-        let left = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(main[0]);
-
-        self.rects.insert(PanelId::CommitInput, left[0]);
-        self.rects.insert(PanelId::Changes, left[1]);
-        self.rects.insert(PanelId::DiffView, main[1]);
+        self.main_area = vertical[0];
         self.status_bar = vertical[1];
+        let pr = layout::compute(vertical[0], &self.sidebar);
+
+        self.rects.clear();
+        if let Some(r) = pr.commit {
+            self.rects.insert(PanelId::CommitInput, r);
+        }
+        if let Some(r) = pr.changes {
+            self.rects.insert(PanelId::Changes, r);
+        }
+        self.rects.insert(PanelId::DiffView, pr.diff);
 
         for (id, comp) in &mut self.components {
             if let Some(rect) = self.rects.get(id).copied() {
                 comp.render(f, rect, *id == self.focus);
+            }
+        }
+        // Recolor both divider border columns while hovered/dragged so the
+        // user can see it is draggable.
+        if self.sidebar.divider_active() {
+            if let Some((a, b)) = pr.divider {
+                for col in [a, b] {
+                    for row in self.main_area.y..self.main_area.y + self.main_area.height {
+                        if let Some(cell) = f.buffer_mut().cell_mut((col, row)) {
+                            cell.set_fg(Color::Cyan);
+                        }
+                    }
+                }
             }
         }
         // Overlays draw on top of the panels with the whole frame available.
@@ -402,7 +521,7 @@ impl App {
         let global = if self.focus == PanelId::CommitInput {
             "tab focus · r refresh"
         } else {
-            "q quit · tab focus · r refresh"
+            "q quit · tab focus · r refresh · b sidebar · [/] resize"
         };
         let panel_hints = self
             .components
@@ -428,5 +547,23 @@ impl App {
             spans.push(Span::styled(format!("  {msg}"), style));
         }
         f.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_refresh_is_deferred_during_input() {
+        let now = Instant::now();
+        // No input yet -> refresh is allowed.
+        assert!(should_refresh(None, now));
+        // Input within the idle window defers the refresh.
+        assert!(!should_refresh(Some(now), now));
+        assert!(!should_refresh(Some(now - Duration::from_millis(999)), now));
+        // Once input has been quiet for REFRESH_IDLE, refresh again.
+        assert!(should_refresh(Some(now - REFRESH_IDLE), now));
+        assert!(should_refresh(Some(now - Duration::from_secs(10)), now));
     }
 }

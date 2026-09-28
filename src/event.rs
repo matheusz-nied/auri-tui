@@ -7,6 +7,9 @@ use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent}
 const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 /// How often a `Tick` is emitted (drives `Action::Refresh` in `App`).
 const TICK_RATE: Duration = Duration::from_secs(2);
+/// Max events `drain` reads per frame — a bound so an endless input stream
+/// can't starve rendering forever.
+const MAX_DRAIN: usize = 256;
 
 /// Events emitted by [`Events`]. `Tick` is a periodic heartbeat with no
 /// crossterm counterpart.
@@ -46,6 +49,29 @@ impl Events {
             }
             return Ok(None);
         }
+    }
+
+    /// Read every event already queued without blocking (cap `MAX_DRAIN`).
+    /// Call after `poll_event` so input bursts — e.g. dozens of trackpad
+    /// scroll events — are all handled before the next redraw instead of
+    /// paying one full render per event.
+    pub fn drain(&mut self) -> Result<Vec<AppEvent>> {
+        let mut out = Vec::new();
+        while out.len() < MAX_DRAIN {
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
+            match event::read()? {
+                Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    out.push(AppEvent::Key(key));
+                }
+                Event::Key(_) => {}
+                Event::Mouse(mouse) => out.push(AppEvent::Mouse(mouse)),
+                Event::Resize(w, h) => out.push(AppEvent::Resize(w, h)),
+                _ => {}
+            }
+        }
+        Ok(out)
     }
 }
 

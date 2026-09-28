@@ -18,7 +18,9 @@ action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
 git/           model types + GitBackend trait; `cli` shells out to git,
                `parse` has pure, unit-tested parsing functions
-components/    commit_input.rs, changes.rs, diff_view.rs
+components/    commit_input.rs, changes.rs, diff_view.rs, hitbox.rs,
+               confirm_dialog.rs (modal overlay example)
+layout.rs      sidebar geometry: width/clamps/divider drag — pure, unit-tested
 ```
 
 Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
@@ -37,6 +39,14 @@ by `App` via `Box<dyn GitBackend>` → results (`StatusLoaded`, `DiffLoaded`,
 `App` route *all* key/mouse events to the overlay alone (Ctrl-C still quits).
 `mouse_leave()` is called when the cursor leaves a panel — clear hover state
 there.
+
+### Sidebar layout — `layout.rs`
+
+The left column (commit input + changes) is a resizable, collapsible sidebar.
+`Sidebar` owns width/visibility/drag state; `compute()` returns the panel
+rects each frame. `Sidebar::on_mouse` consumes divider presses/drags before
+they reach components — App calls it before panel routing. `b` toggles the
+sidebar, `[`/`]` resize it; `c`/`1` re-show it while focusing their panel.
 
 ### Adding a new panel
 

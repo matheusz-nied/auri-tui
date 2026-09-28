@@ -10,7 +10,7 @@ use crate::component::Component;
 use crate::git::{FileChange, Section};
 
 use super::hitbox::{button_span, Hitboxes};
-use super::{border_style, selection_style};
+use super::{border_style, selection_style, SCROLL_LINES};
 
 /// VS Code–style changes list: a "Staged Changes" section followed by a
 /// "Changes" section (unstaged + untracked). Section headers are rendered but
@@ -326,12 +326,12 @@ impl Component for Changes {
                 None
             }
             MouseEventKind::ScrollDown => {
-                self.scroll =
-                    (self.scroll + 3).min(self.rows.len().saturating_sub(self.view_height));
+                self.scroll = (self.scroll + SCROLL_LINES)
+                    .min(self.rows.len().saturating_sub(self.view_height));
                 None
             }
             MouseEventKind::ScrollUp => {
-                self.scroll = self.scroll.saturating_sub(3);
+                self.scroll = self.scroll.saturating_sub(SCROLL_LINES);
                 None
             }
             _ => None,

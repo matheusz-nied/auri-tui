@@ -9,8 +9,8 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::git::{CellKind, DiffCell, DiffDoc, FileChange, RowKind};
 
-use super::border_style;
 use super::hitbox::{button_span, Hitboxes};
+use super::{border_style, SCROLL_LINES};
 
 const REMOVED_BG: Color = Color::Rgb(60, 20, 20);
 const ADDED_BG: Color = Color::Rgb(20, 50, 20);
@@ -189,8 +189,8 @@ impl Component for DiffView {
             }
         }
         match ev.kind {
-            MouseEventKind::ScrollDown => self.scroll_y += 3,
-            MouseEventKind::ScrollUp => self.scroll_y = self.scroll_y.saturating_sub(3),
+            MouseEventKind::ScrollDown => self.scroll_y += SCROLL_LINES,
+            MouseEventKind::ScrollUp => self.scroll_y = self.scroll_y.saturating_sub(SCROLL_LINES),
             _ => {}
         }
         self.clamp_scroll();

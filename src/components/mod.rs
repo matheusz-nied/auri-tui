@@ -15,6 +15,10 @@ pub fn border_style(focused: bool) -> Style {
     }
 }
 
+/// Lines scrolled per mouse-wheel event. Trackpads emit one event per small
+/// gesture step, so this must stay small — a bigger step amplifies overshoot.
+pub const SCROLL_LINES: usize = 1;
+
 /// Selection highlight used by list-like components.
 pub fn selection_style(focused: bool) -> Style {
     if focused {

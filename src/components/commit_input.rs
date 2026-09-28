@@ -118,25 +118,28 @@ impl Component for CommitInput {
         };
         f.render_widget(Paragraph::new(line), inner);
 
-        // "✓ Commit" button, centered; dimmer while the message is empty.
+        // "✓ Commit" full-width button bar; dimmer while the message is empty.
         let label = "✓ Commit";
-        let btn_w = label.chars().count() as u16 + 2;
+        let label_w = label.chars().count() as u16;
+        let left = button_row.width.saturating_sub(label_w) / 2;
+        let right = button_row.width.saturating_sub(left + label_w);
         let bg = if self.message.is_empty() {
             Color::Rgb(40, 60, 80)
         } else {
             Color::Rgb(0, 95, 160)
         };
-        let x = button_row.x + button_row.width.saturating_sub(btn_w) / 2;
-        let btn_rect = Rect::new(x, button_row.y, btn_w.min(button_row.width), 1);
+        let bar = format!(
+            "{}{}{}",
+            " ".repeat(left as usize),
+            label,
+            " ".repeat(right as usize)
+        );
         f.render_widget(
-            Span::styled(
-                format!(" {label} "),
-                Style::default().fg(Color::White).bg(bg),
-            ),
-            btn_rect,
+            Span::styled(bar, Style::default().fg(Color::White).bg(bg)),
+            button_row,
         );
         self.hitboxes
-            .push(btn_rect, Action::Commit(self.message_text()));
+            .push(button_row, Action::Commit(self.message_text()));
 
         if focused {
             let x = inner.x + self.cursor as u16;
@@ -144,5 +147,63 @@ impl Component for CommitInput {
                 f.set_cursor_position((x, inner.y));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn area() -> Rect {
+        Rect::new(0, 0, 60, 4)
+    }
+
+    fn click(col: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 3,
+            modifiers: ratatui::crossterm::event::KeyModifiers::empty(),
+        }
+    }
+
+    #[test]
+    fn commit_button_is_a_full_width_bar() {
+        let mut c = CommitInput::default();
+        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
+        term.draw(|f| c.render(f, area(), true)).unwrap();
+        let buf = term.backend().buffer();
+        // Empty message -> dimmed bar across the whole row.
+        for x in 0..60 {
+            assert_eq!(buf[(x, 3)].bg, Color::Rgb(40, 60, 80), "col {x}");
+        }
+        // Clicking the far edges of the row still hits the button.
+        assert!(matches!(
+            c.handle_mouse(click(0), area()),
+            Some(Action::Error(_))
+        ));
+        assert!(matches!(
+            c.handle_mouse(click(59), area()),
+            Some(Action::Error(_))
+        ));
+    }
+
+    #[test]
+    fn commit_button_click_with_message_commits() {
+        let mut c = CommitInput::default();
+        c.handle_key(KeyEvent::new(
+            KeyCode::Char('x'),
+            ratatui::crossterm::event::KeyModifiers::empty(),
+        ));
+        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
+        term.draw(|f| c.render(f, area(), true)).unwrap();
+        let buf = term.backend().buffer();
+        assert_eq!(buf[(0, 3)].bg, Color::Rgb(0, 95, 160));
+        assert!(matches!(
+            c.handle_mouse(click(59), area()),
+            Some(Action::Commit(m)) if m == "x"
+        ));
     }
 }
