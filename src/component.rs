@@ -39,6 +39,17 @@ pub trait Component {
         ""
     }
 
+    /// Called by `App` when the mouse cursor leaves this panel — clear any
+    /// hover state here.
+    fn mouse_leave(&mut self) {}
+
+    /// Whether this component is a modal overlay capturing all input right
+    /// now (e.g. an open confirmation dialog). While true, `App` forwards all
+    /// key and mouse events to it alone.
+    fn captures_input(&self) -> bool {
+        false
+    }
+
     /// Draw the component into `area`. `focused` indicates it owns the
     /// keyboard focus (highlight the border).
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool);

@@ -1,4 +1,4 @@
-use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,6 +10,7 @@ use crate::component::Component;
 use crate::git::{CellKind, DiffCell, DiffDoc, FileChange, RowKind};
 
 use super::border_style;
+use super::hitbox::{button_span, Hitboxes};
 
 const REMOVED_BG: Color = Color::Rgb(60, 20, 20);
 const ADDED_BG: Color = Color::Rgb(20, 50, 20);
@@ -28,6 +29,7 @@ pub struct DiffView {
     view_height: usize,
     /// Widest cell text, used to clamp horizontal scrolling.
     max_width: usize,
+    hitboxes: Hitboxes,
 }
 
 impl Default for DiffView {
@@ -39,6 +41,7 @@ impl Default for DiffView {
             scroll_x: 0,
             view_height: 1,
             max_width: 0,
+            hitboxes: Hitboxes::default(),
         }
     }
 }
@@ -180,6 +183,11 @@ impl Component for DiffView {
     }
 
     fn handle_mouse(&mut self, ev: MouseEvent, _area: Rect) -> Option<Action> {
+        if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+            if let Some(action) = self.hitboxes.hit(ev.column, ev.row) {
+                return Some(action);
+            }
+        }
         match ev.kind {
             MouseEventKind::ScrollDown => self.scroll_y += 3,
             MouseEventKind::ScrollUp => self.scroll_y = self.scroll_y.saturating_sub(3),
@@ -197,6 +205,8 @@ impl Component for DiffView {
             }
             Action::DiffLoaded(doc) => self.set_doc(doc.clone(), true),
             Action::DiffReloaded(doc) => self.set_doc(doc.clone(), false),
+            Action::DiffNextChange => self.jump_to_change(true),
+            Action::DiffPrevChange => self.jump_to_change(false),
             Action::StatusLoaded(files) => {
                 if let Some(file) = &self.file {
                     let still_there = files
@@ -217,6 +227,7 @@ impl Component for DiffView {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        self.hitboxes.clear();
         let breadcrumb = self
             .doc
             .as_ref()
@@ -227,7 +238,35 @@ impl Component for DiffView {
             .border_style(border_style(focused));
         let inner = block.inner(area);
         self.view_height = inner.height.max(1) as usize;
+        self.clamp_scroll();
         f.render_widget(block, area);
+
+        // Toolbar drawn over the top border, right-aligned with a 1-col gap
+        // from the corner: ↑/↓ jump between changes (only with a doc), ↻
+        // refreshes.
+        let has_doc = self.doc.is_some();
+        let toolbar: &[(&str, Action)] = if has_doc {
+            &[
+                ("↑", Action::DiffPrevChange),
+                ("↓", Action::DiffNextChange),
+                ("↻", Action::Refresh),
+            ]
+        } else {
+            &[("↻", Action::Refresh)]
+        };
+        let mut bx = area.x + area.width.saturating_sub(2);
+        for (glyph, action) in toolbar.iter().rev() {
+            if bx < area.x + 3 {
+                break;
+            }
+            bx -= 3;
+            let rect = Rect::new(bx, area.y, 3, 1);
+            f.render_widget(
+                button_span(glyph, Style::default().fg(Color::DarkGray)),
+                rect,
+            );
+            self.hitboxes.push(rect, action.clone());
+        }
 
         let Some(doc) = &self.doc else {
             let hint = Paragraph::new("Select a file to view its diff")
@@ -298,6 +337,8 @@ fn centered_hint(inner: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::git::{DiffRow, Section};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     fn cell(line_no: usize, kind: CellKind) -> Option<DiffCell> {
         Some(DiffCell {
@@ -374,5 +415,38 @@ mod tests {
         v.update(&Action::DiffLoaded(doc(20)));
         assert_eq!(v.scroll_y, 0);
         assert_eq!(v.scroll_x, 0);
+    }
+
+    #[test]
+    fn toolbar_down_click_jumps_to_next_change() {
+        let mut v = DiffView {
+            view_height: 5,
+            ..Default::default()
+        };
+        // Two changed blocks: rows 0..2 and 10..12.
+        let mut d = doc(20);
+        for row in d.rows.iter_mut().skip(10).take(2) {
+            row.kind = RowKind::Changed;
+            row.left = cell(1, CellKind::Removed);
+            row.right = cell(1, CellKind::Added);
+        }
+        v.update(&Action::SelectFile(file()));
+        v.update(&Action::DiffLoaded(d));
+
+        // Render once so toolbar hitboxes exist (40-wide terminal).
+        let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        term.draw(|f| v.render(f, f.area(), true)).unwrap();
+        // Toolbar: "↑" at cols 29..32, "↓" at 32..35, "↻" at 35..38.
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 33,
+            row: 0,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
+        let act = v.handle_mouse(click, Rect::new(0, 0, 40, 10));
+        assert!(matches!(act, Some(Action::DiffNextChange)));
+
+        v.update(&Action::DiffNextChange);
+        assert_eq!(v.scroll_y, 10);
     }
 }

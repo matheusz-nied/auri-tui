@@ -1,6 +1,8 @@
 pub mod changes;
 pub mod commit_input;
+pub mod confirm_dialog;
 pub mod diff_view;
+pub mod hitbox;
 
 use ratatui::style::{Color, Style};
 

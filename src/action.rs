@@ -46,6 +46,21 @@ pub enum Action {
     /// Stage if the change is not staged, unstage if it is (side effect).
     ToggleStage(FileChange),
     StageAll,
+    UnstageAll,
+    /// Throw away a file's changes: `git restore --worktree` for unstaged
+    /// files, `git clean` for untracked ones (side effect).
+    Discard(FileChange),
+    /// Ask the user before running `then`: opens the confirmation overlay.
+    /// `App` itself ignores this — `ConfirmDialog` picks it up via `update`.
+    Confirm {
+        prompt: String,
+        confirm_label: String,
+        then: Box<Action>,
+    },
+    /// Scroll the diff to the previous/next changed block (handled by
+    /// `DiffView::update`; `App` ignores them).
+    DiffPrevChange,
+    DiffNextChange,
     /// Commit the staged changes with this message (side effect).
     Commit(String),
     CommitDone,

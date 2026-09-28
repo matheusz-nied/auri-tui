@@ -1,4 +1,4 @@
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -9,15 +9,24 @@ use crate::action::Action;
 use crate::component::Component;
 
 use super::border_style;
+use super::hitbox::Hitboxes;
 
-/// Single-line commit message box. When focused, printable characters edit the
-/// message; Enter emits `Action::Commit`, Esc returns focus via `FocusNext`.
+/// Single-line commit message box plus a centered "✓ Commit" button on the
+/// last row. When focused, printable characters edit the message; Enter emits
+/// `Action::Commit`, Esc returns focus via `FocusNext`.
 #[derive(Default)]
 pub struct CommitInput {
     message: Vec<char>,
     /// Cursor position as a char index into `message`.
     cursor: usize,
     branch: String,
+    hitboxes: Hitboxes,
+}
+
+impl CommitInput {
+    fn message_text(&self) -> String {
+        self.message.iter().collect()
+    }
 }
 
 impl Component for CommitInput {
@@ -43,12 +52,24 @@ impl Component for CommitInput {
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.message.len(),
             KeyCode::Enter => {
-                let msg: String = self.message.iter().collect();
+                let msg = self.message_text();
                 if !msg.trim().is_empty() {
                     return Some(Action::Commit(msg));
                 }
             }
             _ => {}
+        }
+        None
+    }
+
+    fn handle_mouse(&mut self, ev: MouseEvent, _area: Rect) -> Option<Action> {
+        if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+            if let Some(Action::Commit(msg)) = self.hitboxes.hit(ev.column, ev.row) {
+                if msg.trim().is_empty() {
+                    return Some(Action::Error("Type a commit message".to_string()));
+                }
+                return Some(Action::Commit(msg));
+            }
         }
         None
     }
@@ -70,13 +91,18 @@ impl Component for CommitInput {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        self.hitboxes.clear();
+        // Last row is the button bar; the rest is the bordered input box.
+        let input = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
+        let button_row = Rect::new(area.x, area.y + input.height, area.width, 1);
+
         let block = Block::bordered()
             .title("Message (Enter to commit)")
             .border_style(border_style(focused));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
+        let inner = block.inner(input);
+        f.render_widget(block, input);
 
-        let text: String = self.message.iter().collect();
+        let text = self.message_text();
         let line = if text.is_empty() {
             let placeholder = if self.branch.is_empty() {
                 "Commit message".to_string()
@@ -91,6 +117,26 @@ impl Component for CommitInput {
             Line::from(text)
         };
         f.render_widget(Paragraph::new(line), inner);
+
+        // "✓ Commit" button, centered; dimmer while the message is empty.
+        let label = "✓ Commit";
+        let btn_w = label.chars().count() as u16 + 2;
+        let bg = if self.message.is_empty() {
+            Color::Rgb(40, 60, 80)
+        } else {
+            Color::Rgb(0, 95, 160)
+        };
+        let x = button_row.x + button_row.width.saturating_sub(btn_w) / 2;
+        let btn_rect = Rect::new(x, button_row.y, btn_w.min(button_row.width), 1);
+        f.render_widget(
+            Span::styled(
+                format!(" {label} "),
+                Style::default().fg(Color::White).bg(bg),
+            ),
+            btn_rect,
+        );
+        self.hitboxes
+            .push(btn_rect, Action::Commit(self.message_text()));
 
         if focused {
             let x = inner.x + self.cursor as u16;

@@ -9,21 +9,28 @@ use crate::action::{Action, PanelId};
 use crate::component::Component;
 use crate::git::{FileChange, Section};
 
+use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, selection_style};
 
 /// VS Code–style changes list: a "Staged Changes" section followed by a
 /// "Changes" section (unstaged + untracked). Section headers are rendered but
-/// not selectable.
+/// not selectable. File rows show action buttons (discard/stage/unstage) when
+/// hovered or selected; section headers carry a stage-all/unstage-all button.
 pub struct Changes {
     rows: Vec<Row>,
     /// Index into `rows`; always on a `Row::File` (or 0 when empty).
     selected: usize,
+    /// Row index under the mouse cursor.
+    hover: Option<usize>,
     scroll: usize,
     view_height: usize,
+    hitboxes: Hitboxes,
 }
 
 enum Row {
-    Header(String),
+    /// Title plus an optional 3-column button (glyph, action) drawn
+    /// right-aligned.
+    Header(String, Option<(&'static str, Action)>),
     File(FileChange),
 }
 
@@ -32,8 +39,10 @@ impl Default for Changes {
         Self {
             rows: Vec::new(),
             selected: 0,
+            hover: None,
             scroll: 0,
             view_height: 1,
+            hitboxes: Hitboxes::default(),
         }
     }
 }
@@ -57,12 +66,18 @@ impl Changes {
 
         let mut rows = Vec::new();
         if !staged.is_empty() {
-            rows.push(Row::Header(format!("Staged Changes ({})", staged.len())));
+            rows.push(Row::Header(
+                format!("Staged Changes ({})", staged.len()),
+                Some(("−", Action::UnstageAll)),
+            ));
             rows.extend(staged.iter().map(|f| Row::File((*f).clone())));
         }
-        rows.push(Row::Header(format!("Changes ({})", rest.len())));
+        rows.push(Row::Header(
+            format!("Changes ({})", rest.len()),
+            (!rest.is_empty()).then_some(("+", Action::StageAll)),
+        ));
         if rest.is_empty() && staged.is_empty() {
-            rows.push(Row::Header("No changes".to_string()));
+            rows.push(Row::Header("No changes".to_string(), None));
         }
         rows.extend(rest.iter().map(|f| Row::File((*f).clone())));
         self.rows = rows;
@@ -154,6 +169,21 @@ impl Changes {
     }
 }
 
+/// `Action::Confirm` wrapping `Discard` with the right prompt for the section.
+fn discard_confirm(f: &FileChange) -> Action {
+    let prompt = match f.section {
+        Section::Untracked => {
+            format!("Delete untracked file {}? This cannot be undone.", f.path)
+        }
+        _ => format!("Discard changes in {}? This cannot be undone.", f.path),
+    };
+    Action::Confirm {
+        prompt,
+        confirm_label: "Discard".to_string(),
+        then: Box::new(Action::Discard(f.clone())),
+    }
+}
+
 fn code_color(code: char) -> Color {
     match code {
         'M' => Color::Yellow,
@@ -164,28 +194,85 @@ fn code_color(code: char) -> Color {
     }
 }
 
-fn file_row_line(f: &FileChange, width: usize, style: Style) -> Line<'static> {
+fn button_color(glyph: &str) -> Color {
+    match glyph {
+        "+" => Color::Green,
+        "−" => Color::Blue,
+        "↶" => Color::Red,
+        _ => Color::White,
+    }
+}
+
+/// The buttons a file row offers, as `(glyph, action)` in display order.
+fn row_buttons(f: &FileChange) -> Vec<(&'static str, Action)> {
+    match f.section {
+        Section::Staged => vec![("−", Action::ToggleStage(f.clone()))],
+        _ => vec![
+            ("↶", discard_confirm(f)),
+            ("+", Action::ToggleStage(f.clone())),
+        ],
+    }
+}
+
+/// Build the line for a file row plus its button hitboxes, expressed as
+/// `(x_offset, action)` relative to the inner area's left edge.
+fn file_row_line(
+    f: &FileChange,
+    width: usize,
+    style: Style,
+    show_buttons: bool,
+) -> (Line<'static>, Vec<(u16, Action)>) {
+    let buttons = if show_buttons {
+        row_buttons(f)
+    } else {
+        Vec::new()
+    };
+    let code = f.code.to_string();
+    // code at the last column, buttons (3 cols each) right before it.
+    let btn_w = buttons.len() * 3;
+    // Space for " name dir": leading space + text, minus code and buttons.
+    let avail = width.saturating_sub(code.len() + btn_w);
+    // Too narrow for buttons: drop them and use the width for text instead.
+    let (buttons, btn_w, avail) = if btn_w > 0 && avail < 4 {
+        (Vec::new(), 0, width.saturating_sub(code.len()))
+    } else {
+        (buttons, btn_w, avail)
+    };
+
     // VS Code style: `action.rs src` — name, then the dim parent dir.
     let (dir, name) = match f.path.rsplit_once('/') {
         Some((d, n)) => (d.to_string(), n.to_string()),
         None => (String::new(), f.path.clone()),
     };
-    let code = f.code.to_string();
-    let dir_w = if dir.is_empty() {
-        0
+    let name_span = format!(" {name}");
+    let dir_span = if dir.is_empty() {
+        String::new()
     } else {
-        1 + dir.chars().count()
+        format!(" {dir}")
     };
-    // leading space + name + (" " + dir) + code
-    let used = 1 + name.chars().count() + dir_w + code.len();
-    let pad = width.saturating_sub(used);
-    let mut spans = vec![Span::styled(format!(" {name}"), style)];
-    if !dir.is_empty() {
-        spans.push(Span::styled(format!(" {dir}"), style.fg(Color::DarkGray)));
+    let name_w = name_span.chars().count().min(avail);
+    let name_txt: String = name_span.chars().take(name_w).collect();
+    let dir_w = dir_span.chars().count().min(avail.saturating_sub(name_w));
+    let dir_txt: String = dir_span.chars().take(dir_w).collect();
+    let used = name_w + dir_w;
+    let pad = avail.saturating_sub(used);
+
+    let mut spans = vec![
+        Span::styled(name_txt, style),
+        Span::styled(dir_txt, style.fg(Color::DarkGray)),
+        Span::styled(" ".repeat(pad), style),
+    ];
+    let mut hits = Vec::new();
+    // Buttons sit right before the code column, at fixed offsets from the
+    // right edge.
+    let mut x = (width - code.len() - btn_w) as u16;
+    for (glyph, action) in &buttons {
+        spans.push(button_span(glyph, style.fg(button_color(glyph))));
+        hits.push((x, action.clone()));
+        x += 3;
     }
-    spans.push(Span::styled(" ".repeat(pad), style));
     spans.push(Span::styled(code, style.fg(code_color(f.code))));
-    Line::from(spans)
+    (Line::from(spans), hits)
 }
 
 impl Component for Changes {
@@ -196,6 +283,10 @@ impl Component for Changes {
             KeyCode::Char(' ') | KeyCode::Char('s') => {
                 self.selected_file().map(Action::ToggleStage)
             }
+            KeyCode::Char('d') => self
+                .selected_file()
+                .filter(|f| f.section != Section::Staged)
+                .map(|f| discard_confirm(&f)),
             KeyCode::Char('a') => Some(Action::StageAll),
             KeyCode::Enter => Some(Action::Focus(PanelId::DiffView)),
             _ => None,
@@ -205,17 +296,33 @@ impl Component for Changes {
     fn handle_mouse(&mut self, ev: MouseEvent, area: Rect) -> Option<Action> {
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Buttons take precedence over row selection.
+                if let Some(action) = self.hitboxes.hit(ev.column, ev.row) {
+                    return Some(action);
+                }
                 // Only clicks strictly inside the borders select a row;
                 // `ev.row - area.y - 1` maps a row to `scroll + offset`.
                 if ev.row <= area.y || ev.row >= area.y + area.height - 1 {
                     return None;
                 }
                 let idx = self.scroll + (ev.row - area.y - 1) as usize;
-                if let Some(Row::File(_)) = self.rows.get(idx) {
-                    self.selected = idx;
-                    self.ensure_visible();
-                    return self.selected_file().map(Action::SelectFile);
+                match self.rows.get(idx) {
+                    Some(Row::File(_)) if idx == self.selected => None,
+                    Some(Row::File(_)) => {
+                        self.selected = idx;
+                        self.ensure_visible();
+                        self.selected_file().map(Action::SelectFile)
+                    }
+                    _ => None,
                 }
+            }
+            MouseEventKind::Moved => {
+                if ev.row <= area.y || ev.row >= area.y + area.height - 1 {
+                    self.hover = None;
+                    return None;
+                }
+                let idx = self.scroll + (ev.row - area.y - 1) as usize;
+                self.hover = (idx < self.rows.len()).then_some(idx);
                 None
             }
             MouseEventKind::ScrollDown => {
@@ -229,6 +336,10 @@ impl Component for Changes {
             }
             _ => None,
         }
+    }
+
+    fn mouse_leave(&mut self) {
+        self.hover = None;
     }
 
     fn update(&mut self, action: &Action) -> Option<Action> {
@@ -248,19 +359,24 @@ impl Component for Changes {
     }
 
     fn hints(&self) -> &'static str {
-        "space stage/unstage · a stage all · enter diff · c message"
+        "space stage/unstage · d discard · a stage all · enter diff · c message"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
+        self.hitboxes.clear();
         let block = Block::bordered()
             .title("Changes")
             .border_style(border_style(focused));
         let inner = block.inner(area);
         self.view_height = inner.height.max(1) as usize;
+        // Re-clamp now that the real height is known (e.g. after a resize or
+        // a selection made before the first render).
+        self.ensure_visible();
         f.render_widget(block, area);
 
         let width = inner.width as usize;
         // Only build the visible slice — the list can be long.
+        let mut hits: Vec<(u16, u16, Action)> = Vec::new();
         let lines: Vec<Line> = self
             .rows
             .iter()
@@ -268,20 +384,45 @@ impl Component for Changes {
             .skip(self.scroll)
             .take(self.view_height)
             .map(|(i, row)| match row {
-                Row::Header(h) => Line::from(Span::styled(
-                    format!(" {h}"),
-                    Style::default().fg(Color::DarkGray),
-                )),
+                Row::Header(h, button) => {
+                    let style = Style::default().fg(Color::DarkGray);
+                    let spans = if let Some((glyph, action)) = button {
+                        // 3-column button, right-aligned; truncate the title
+                        // so the button always fits.
+                        let bx = width.saturating_sub(3);
+                        let title: String = format!(" {h}").chars().take(bx).collect();
+                        let pad = bx - title.chars().count();
+                        let y = inner.y + (i - self.scroll) as u16;
+                        hits.push((inner.x + bx as u16, y, action.clone()));
+                        vec![
+                            Span::styled(title, style),
+                            Span::styled(" ".repeat(pad), style),
+                            button_span(glyph, style),
+                        ]
+                    } else {
+                        vec![Span::styled(format!(" {h}"), style)]
+                    };
+                    Line::from(spans)
+                }
                 Row::File(fc) => {
                     let style = if i == self.selected {
                         selection_style(focused)
                     } else {
                         Style::default()
                     };
-                    file_row_line(fc, width, style)
+                    let show_buttons = i == self.selected || self.hover == Some(i);
+                    let (line, row_hits) = file_row_line(fc, width, style, show_buttons);
+                    let y = inner.y + (i - self.scroll) as u16;
+                    for (x, action) in row_hits {
+                        hits.push((inner.x + x, y, action));
+                    }
+                    line
                 }
             })
             .collect();
+        for (x, y, action) in hits {
+            self.hitboxes.push(Rect::new(x, y, 3, 1), action);
+        }
         f.render_widget(Paragraph::new(lines), inner);
     }
 }
@@ -290,6 +431,8 @@ impl Component for Changes {
 mod tests {
     use super::*;
     use crate::git::Section;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     fn fc(path: &str, section: Section) -> FileChange {
         FileChange {
@@ -304,6 +447,21 @@ mod tests {
         match c.rows.get(c.selected) {
             Some(Row::File(f)) => Some((f.path.clone(), f.section)),
             _ => None,
+        }
+    }
+
+    fn draw(c: &mut Changes, w: u16, h: u16) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| c.render(f, f.area(), true)).unwrap();
+        term
+    }
+
+    fn click(col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
         }
     }
 
@@ -379,5 +537,84 @@ mod tests {
         let mut c = Changes::default();
         let act = c.update(&Action::StatusLoaded(vec![]));
         assert!(act.is_none());
+    }
+
+    // Button layout for a 20-wide panel: inner 18 cols, code at offset 17,
+    // "+" at offsets 14..17, "↶" at offsets 11..14 (unstaged rows).
+    #[test]
+    fn click_stage_button_emits_toggle_stage() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![fc("f.rs", Section::Unstaged)]));
+        let area = Rect::new(0, 0, 20, 8);
+        draw(&mut c, 20, 8); // populates hitboxes
+                             // "+" glyph is the middle column of its 3-col hitbox: inner.x + 14 + 1.
+        let act = c.handle_mouse(click(16, 2), area);
+        assert!(
+            matches!(&act, Some(Action::ToggleStage(f)) if f.path == "f.rs"),
+            "expected ToggleStage, got {act:?}"
+        );
+    }
+
+    #[test]
+    fn click_discard_button_emits_confirm() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![fc("f.rs", Section::Unstaged)]));
+        let area = Rect::new(0, 0, 20, 8);
+        draw(&mut c, 20, 8);
+        // "↶" button hitbox: inner.x + 11 .. +14 → click column 13.
+        let act = c.handle_mouse(click(13, 2), area);
+        match act {
+            Some(Action::Confirm { then, .. }) => {
+                assert!(matches!(*then, Action::Discard(ref f) if f.path == "f.rs"));
+            }
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn staged_header_button_emits_unstage_all() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![fc("f.rs", Section::Staged)]));
+        let area = Rect::new(0, 0, 20, 8);
+        draw(&mut c, 20, 8);
+        // "Staged Changes" header is row 0 (screen y=1); "−" at inner.x+15..+18.
+        let act = c.handle_mouse(click(16, 1), area);
+        assert!(matches!(act, Some(Action::UnstageAll)));
+    }
+
+    #[test]
+    fn click_selected_row_emits_nothing() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![fc("f.rs", Section::Unstaged)]));
+        let area = Rect::new(0, 0, 20, 8);
+        draw(&mut c, 20, 8);
+        // Click the file name area of the already-selected row.
+        assert!(c.handle_mouse(click(5, 2), area).is_none());
+        assert_eq!(selected(&c), Some(("f.rs".into(), Section::Unstaged)));
+    }
+
+    #[test]
+    fn hover_renders_buttons_on_unselected_row() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![
+            fc("a.rs", Section::Unstaged),
+            fc("b.rs", Section::Unstaged),
+        ]));
+        let area = Rect::new(0, 0, 20, 8);
+        draw(&mut c, 20, 8);
+        // Hover the second file row (index 2 → screen y = 1 + 2 = 3).
+        let moved = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 5,
+            row: 3,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
+        assert!(c.handle_mouse(moved, area).is_none());
+        let term = draw(&mut c, 20, 8);
+        // "+" glyph sits at the middle of its 3-col button: inner.x + 14 + 1.
+        assert_eq!(term.backend().buffer()[(16, 3)].symbol(), "+");
+        assert_eq!(term.backend().buffer()[(13, 3)].symbol(), "↶");
+        // Selected row (a.rs at y=2) shows its buttons too.
+        assert_eq!(term.backend().buffer()[(16, 2)].symbol(), "+");
     }
 }

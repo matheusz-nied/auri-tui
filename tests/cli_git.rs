@@ -164,6 +164,106 @@ fn commit_works_on_unborn_repo() {
     assert_eq!(entry.section, Section::Unstaged);
 }
 
+fn find(
+    status: &[terminal_ide::git::FileChange],
+    path: &str,
+    section: Section,
+) -> terminal_ide::git::FileChange {
+    status
+        .iter()
+        .find(|f| f.path == path && f.section == section)
+        .unwrap_or_else(|| panic!("{path} not in {section:?}"))
+        .clone()
+}
+
+#[test]
+fn discard_unstaged_modification_restores_content() {
+    let dir = make_repo();
+    let git = CliGit::new(dir.path());
+    let file = find(&git.status().unwrap(), "tracked.txt", Section::Unstaged);
+
+    git.discard(&file).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("tracked.txt")).unwrap(),
+        "hello\n"
+    );
+    assert!(git
+        .status()
+        .unwrap()
+        .iter()
+        .all(|f| f.path != "tracked.txt"));
+}
+
+#[test]
+fn discard_untracked_deletes_file() {
+    let dir = make_repo();
+    let git = CliGit::new(dir.path());
+    let file = find(&git.status().unwrap(), "untracked.txt", Section::Untracked);
+
+    git.discard(&file).unwrap();
+
+    assert!(!dir.path().join("untracked.txt").exists());
+}
+
+#[test]
+fn discard_deleted_in_worktree_restores_file() {
+    let dir = make_repo();
+    fs::remove_file(dir.path().join("tracked.txt")).unwrap();
+    let git = CliGit::new(dir.path());
+    let file = find(&git.status().unwrap(), "tracked.txt", Section::Unstaged);
+    assert_eq!(file.code, 'D');
+
+    git.discard(&file).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("tracked.txt")).unwrap(),
+        "hello\n"
+    );
+}
+
+#[test]
+fn discard_staged_file_errors() {
+    let dir = make_repo();
+    let git = CliGit::new(dir.path());
+    git.stage("tracked.txt").unwrap();
+    let file = find(&git.status().unwrap(), "tracked.txt", Section::Staged);
+    assert!(git.discard(&file).is_err());
+}
+
+#[test]
+fn unstage_all_with_head() {
+    let dir = make_repo();
+    let git = CliGit::new(dir.path());
+    git.stage_all().unwrap();
+    assert!(git
+        .status()
+        .unwrap()
+        .iter()
+        .any(|f| f.section == Section::Staged));
+
+    git.unstage_all().unwrap();
+
+    assert!(git
+        .status()
+        .unwrap()
+        .iter()
+        .all(|f| f.section != Section::Staged));
+}
+
+#[test]
+fn unstage_all_on_unborn_repo() {
+    let dir = make_unborn_repo();
+    let git = CliGit::new(dir.path());
+    git.stage("new.txt").unwrap();
+
+    git.unstage_all().unwrap();
+
+    let status = git.status().unwrap();
+    assert!(status.iter().all(|f| f.section != Section::Staged));
+    assert_eq!(find(&status, "new.txt", Section::Untracked).path, "new.txt");
+}
+
 #[test]
 fn branch_returns_current_name() {
     let dir = make_repo();

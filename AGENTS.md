@@ -23,9 +23,20 @@ components/    commit_input.rs, changes.rs, diff_view.rs
 
 Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
-`ToggleStage`, `Commit`, `SelectFile`) are executed by `App` via
-`Box<dyn GitBackend>` → results (`StatusLoaded`, `DiffLoaded`, `Error`) are
-broadcast to every component's `update`.
+`ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`) are executed
+by `App` via `Box<dyn GitBackend>` → results (`StatusLoaded`, `DiffLoaded`,
+`Error`) are broadcast to every component's `update`.
+
+### Clickable buttons — `components/hitbox.rs`
+
+`Hitboxes` is a `Vec<(Rect, Action)>` a component clears and fills during
+`render` (it knows exact positions); on `Down(Left)` it checks
+`hitboxes.hit(col, row)` **before** any other click handling. Buttons are
+3-column `" {glyph} "` spans (`button_span`). `ConfirmDialog` in
+`overlays` shows the pattern for modal UI: `captures_input() == true` makes
+`App` route *all* key/mouse events to the overlay alone (Ctrl-C still quits).
+`mouse_leave()` is called when the cursor leaves a panel — clear hover state
+there.
 
 ### Adding a new panel
 

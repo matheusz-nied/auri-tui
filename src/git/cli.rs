@@ -119,8 +119,35 @@ impl GitBackend for CliGit {
         Ok(())
     }
 
+    fn discard(&self, file: &FileChange) -> Result<()> {
+        match file.section {
+            Section::Untracked => {
+                self.run(&["clean", "-f", "-q", "--", &file.path], &[])?;
+            }
+            Section::Unstaged => {
+                // Restores worktree content from the index; works on unborn
+                // branches too since no HEAD lookup is needed.
+                self.run(&["restore", "--worktree", "--", &file.path], &[])?;
+            }
+            Section::Staged => bail!("discard is only for unstaged changes"),
+        }
+        Ok(())
+    }
+
     fn stage_all(&self) -> Result<()> {
         self.run(&["add", "-A"], &[])?;
+        Ok(())
+    }
+
+    fn unstage_all(&self) -> Result<()> {
+        // `git reset` needs a HEAD commit; on an unborn branch remove every
+        // index entry instead.
+        let head = self.run(&["rev-parse", "--verify", "-q", "HEAD"], &[1])?;
+        if head.status.success() {
+            self.run(&["reset", "-q"], &[])?;
+        } else {
+            self.run(&["rm", "--cached", "-r", "-q", "--", "."], &[])?;
+        }
         Ok(())
     }
 

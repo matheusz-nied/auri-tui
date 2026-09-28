@@ -76,7 +76,11 @@ pub trait GitBackend {
     fn diff(&self, file: &FileChange) -> Result<DiffDoc>;
     fn stage(&self, path: &str) -> Result<()>;
     fn unstage(&self, path: &str) -> Result<()>;
+    /// Revert a file's changes: delete untracked files, restore unstaged
+    /// modifications from the index. Errors on `Staged` files.
+    fn discard(&self, file: &FileChange) -> Result<()>;
     fn stage_all(&self) -> Result<()>;
+    fn unstage_all(&self) -> Result<()>;
     fn commit(&self, message: &str) -> Result<()>;
     fn branch(&self) -> Result<String>;
 }

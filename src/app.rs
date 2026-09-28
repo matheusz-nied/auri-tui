@@ -12,6 +12,7 @@ use crate::action::{Action, PanelId};
 use crate::component::Component;
 use crate::components::changes::Changes;
 use crate::components::commit_input::CommitInput;
+use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
 use crate::event::{AppEvent, Events};
 use crate::git::{FileChange, GitBackend, Section};
@@ -26,7 +27,14 @@ pub struct App {
     events: Events,
     /// Panels in focus-cycling order.
     components: Vec<(PanelId, Box<dyn Component>)>,
+    /// Modal overlays rendered above the panels. While any overlay reports
+    /// `captures_input()`, it receives all input exclusively.
+    overlays: Vec<Box<dyn Component>>,
     focus: PanelId,
+    /// Panel the mouse cursor is currently over (drives `mouse_leave`).
+    hovered: Option<PanelId>,
+    /// Full frame area from the last render (overlay mouse coordinates).
+    frame_area: Rect,
     queue: VecDeque<Action>,
     /// Rect each panel was rendered into last frame, used for click hit-tests.
     rects: HashMap<PanelId, Rect>,
@@ -53,7 +61,10 @@ impl App {
                 (PanelId::Changes, Box::new(Changes::default())),
                 (PanelId::DiffView, Box::new(DiffView::default())),
             ],
+            overlays: vec![Box::new(ConfirmDialog::default())],
             focus: PanelId::Changes,
+            hovered: None,
+            frame_area: Rect::default(),
             queue: VecDeque::new(),
             rects: HashMap::new(),
             status_bar: Rect::default(),
@@ -93,6 +104,11 @@ impl App {
         while let Some(action) = self.queue.pop_front() {
             for (_, comp) in &mut self.components {
                 if let Some(next) = comp.update(&action) {
+                    self.queue.push_back(next);
+                }
+            }
+            for overlay in &mut self.overlays {
+                if let Some(next) = overlay.update(&action) {
                     self.queue.push_back(next);
                 }
             }
@@ -158,6 +174,14 @@ impl App {
                 Ok(()) => self.enqueue(Action::Refresh),
                 Err(e) => self.enqueue(Action::Error(format!("stage: {e}"))),
             },
+            Action::UnstageAll => match self.git.unstage_all() {
+                Ok(()) => self.enqueue(Action::Refresh),
+                Err(e) => self.enqueue(Action::Error(format!("unstage: {e}"))),
+            },
+            Action::Discard(file) => match self.git.discard(&file) {
+                Ok(()) => self.enqueue(Action::Refresh),
+                Err(e) => self.enqueue(Action::Error(format!("discard: {e}"))),
+            },
             Action::Commit(msg) => {
                 let staged = self
                     .last_status
@@ -182,7 +206,13 @@ impl App {
                 self.message = Some((msg, true));
             }
             Action::BranchLoaded(branch) => self.branch = branch,
-            Action::DiffLoaded(_) | Action::DiffReloaded(_) => {}
+            // Handled entirely by components via `update`: Confirm opens the
+            // overlay, DiffPrev/DiffNext scroll the diff view.
+            Action::DiffLoaded(_)
+            | Action::DiffReloaded(_)
+            | Action::Confirm { .. }
+            | Action::DiffPrevChange
+            | Action::DiffNextChange => {}
         }
     }
 
@@ -223,6 +253,18 @@ impl App {
     fn on_key(&mut self, key: KeyEvent) {
         // Any key press dismisses the last info/error message.
         self.message = None;
+        // Ctrl-C always quits, even while a modal overlay is open.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.enqueue(Action::Quit);
+            return;
+        }
+        // A modal overlay owns all input while it captures.
+        if let Some(overlay) = self.overlays.iter_mut().find(|o| o.captures_input()) {
+            if let Some(action) = overlay.handle_key(key) {
+                self.enqueue(action);
+            }
+            return;
+        }
         let commit_focused = self.focus == PanelId::CommitInput;
         // When the commit input is focused, only these keys are global —
         // everything else is text input.
@@ -289,11 +331,27 @@ impl App {
         // Events go to the panel under the cursor (e.g. wheel over the diff
         // scrolls it while the changes list keeps focus); only button presses
         // move focus. Events outside all panels are ignored.
-        let Some((id, area)) = self
+        // A modal overlay owns all input while it captures.
+        if let Some(overlay) = self.overlays.iter_mut().find(|o| o.captures_input()) {
+            if let Some(action) = overlay.handle_mouse(ev, self.frame_area) {
+                self.enqueue(action);
+            }
+            return;
+        }
+        let under = self
             .rects
             .iter()
             .find(|(_, r)| r.contains(pos.into()))
-            .map(|(id, r)| (*id, *r))
+            .map(|(id, _)| *id);
+        if under != self.hovered {
+            if let Some(prev) = self.hovered {
+                if let Some((_, comp)) = self.components.iter_mut().find(|(id, _)| *id == prev) {
+                    comp.mouse_leave();
+                }
+            }
+            self.hovered = under;
+        }
+        let Some((id, area)) = under.and_then(|id| self.rects.get(&id).copied().map(|r| (id, r)))
         else {
             return;
         };
@@ -309,10 +367,11 @@ impl App {
 
     fn render(&mut self, f: &mut Frame) {
         let area = f.area();
+        self.frame_area = area;
         let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
         let main = Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(vertical[0]);
-        let left = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(main[0]);
+        let left = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(main[0]);
 
         self.rects.insert(PanelId::CommitInput, left[0]);
         self.rects.insert(PanelId::Changes, left[1]);
@@ -323,6 +382,10 @@ impl App {
             if let Some(rect) = self.rects.get(id).copied() {
                 comp.render(f, rect, *id == self.focus);
             }
+        }
+        // Overlays draw on top of the panels with the whole frame available.
+        for overlay in &mut self.overlays {
+            overlay.render(f, area, overlay.captures_input());
         }
         self.render_status_bar(f);
     }
