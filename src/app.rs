@@ -221,6 +221,8 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        // Any key press dismisses the last info/error message.
+        self.message = None;
         let commit_focused = self.focus == PanelId::CommitInput;
         // When the commit input is focused, only these keys are global —
         // everything else is text input.
@@ -332,12 +334,27 @@ impl App {
         } else {
             self.branch.clone()
         };
+        // Global keys minus `q` while typing a commit message (q is text
+        // there), then the focused panel's own hints.
+        let global = if self.focus == PanelId::CommitInput {
+            "tab focus · r refresh"
+        } else {
+            "q quit · tab focus · r refresh"
+        };
+        let panel_hints = self
+            .components
+            .iter()
+            .find(|(id, _)| *id == self.focus)
+            .map(|(_, c)| c.hints())
+            .unwrap_or("");
+        let keys = if panel_hints.is_empty() {
+            global.to_string()
+        } else {
+            format!("{global} · {panel_hints}")
+        };
         let mut spans = vec![
             Span::styled(format!(" {branch}"), Style::default().fg(Color::Cyan)),
-            Span::styled(
-                "  q quit · tab focus · r refresh · space stage · a stage all · c commit",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(format!("  {keys}"), Style::default().fg(Color::DarkGray)),
         ];
         if let Some((msg, is_error)) = &self.message {
             let style = if *is_error {

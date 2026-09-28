@@ -65,6 +65,10 @@ impl Component for CommitInput {
         None
     }
 
+    fn hints(&self) -> &'static str {
+        "enter commit · esc back"
+    }
+
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let block = Block::bordered()
             .title("Message (Enter to commit)")

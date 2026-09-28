@@ -212,6 +212,10 @@ impl Component for DiffView {
         None
     }
 
+    fn hints(&self) -> &'static str {
+        "n/N next/prev change · h/l scroll"
+    }
+
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         let breadcrumb = self
             .doc

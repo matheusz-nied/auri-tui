@@ -165,19 +165,27 @@ fn code_color(code: char) -> Color {
 }
 
 fn file_row_line(f: &FileChange, width: usize, style: Style) -> Line<'static> {
+    // VS Code style: `action.rs src` — name, then the dim parent dir.
     let (dir, name) = match f.path.rsplit_once('/') {
-        Some((d, n)) => (format!("{d}/"), n.to_string()),
+        Some((d, n)) => (d.to_string(), n.to_string()),
         None => (String::new(), f.path.clone()),
     };
     let code = f.code.to_string();
-    let used = name.chars().count() + dir.chars().count() + 1 + code.len();
+    let dir_w = if dir.is_empty() {
+        0
+    } else {
+        1 + dir.chars().count()
+    };
+    // leading space + name + (" " + dir) + code
+    let used = 1 + name.chars().count() + dir_w + code.len();
     let pad = width.saturating_sub(used);
-    Line::from(vec![
-        Span::styled(format!(" {name}"), style),
-        Span::styled(dir, style.fg(Color::DarkGray)),
-        Span::styled(" ".repeat(pad), style),
-        Span::styled(code, style.fg(code_color(f.code))),
-    ])
+    let mut spans = vec![Span::styled(format!(" {name}"), style)];
+    if !dir.is_empty() {
+        spans.push(Span::styled(format!(" {dir}"), style.fg(Color::DarkGray)));
+    }
+    spans.push(Span::styled(" ".repeat(pad), style));
+    spans.push(Span::styled(code, style.fg(code_color(f.code))));
+    Line::from(spans)
 }
 
 impl Component for Changes {
@@ -237,6 +245,10 @@ impl Component for Changes {
             }
             _ => None,
         }
+    }
+
+    fn hints(&self) -> &'static str {
+        "space stage/unstage · a stage all · enter diff · c message"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {

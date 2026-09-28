@@ -108,7 +108,14 @@ impl GitBackend for CliGit {
     }
 
     fn unstage(&self, path: &str) -> Result<()> {
-        self.run(&["restore", "--staged", "--", path], &[])?;
+        // `git restore --staged` needs a HEAD commit; on an unborn branch
+        // (repo with no commits) fall back to removing the index entry.
+        let head = self.run(&["rev-parse", "--verify", "-q", "HEAD"], &[1])?;
+        if head.status.success() {
+            self.run(&["restore", "--staged", "--", path], &[])?;
+        } else {
+            self.run(&["rm", "--cached", "-q", "--", path], &[])?;
+        }
         Ok(())
     }
 

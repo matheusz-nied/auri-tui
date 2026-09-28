@@ -110,6 +110,60 @@ fn diff_of_untracked_file_is_all_added() {
     }
 }
 
+/// A repo with zero commits (unborn HEAD).
+fn make_unborn_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    git(&dir, &["init"]);
+    git(&dir, &["config", "user.name", "Tide Test"]);
+    git(&dir, &["config", "user.email", "tide@example.com"]);
+    fs::write(dir.path().join("new.txt"), "hello\n").unwrap();
+    dir
+}
+
+#[test]
+fn unstage_without_commits_falls_back_to_rm_cached() {
+    let dir = make_unborn_repo();
+    let git = CliGit::new(dir.path());
+
+    git.stage("new.txt").unwrap();
+    let status = git.status().unwrap();
+    let staged = status
+        .iter()
+        .find(|f| f.path == "new.txt")
+        .expect("new.txt in status");
+    assert_eq!(staged.section, Section::Staged);
+
+    // `git restore --staged` would fail here ("could not resolve 'HEAD'").
+    git.unstage("new.txt").unwrap();
+    let status = git.status().unwrap();
+    let entry = status
+        .iter()
+        .find(|f| f.path == "new.txt")
+        .expect("new.txt still in status");
+    assert_eq!(entry.section, Section::Untracked);
+}
+
+#[test]
+fn commit_works_on_unborn_repo() {
+    let dir = make_unborn_repo();
+    let git = CliGit::new(dir.path());
+
+    git.stage("new.txt").unwrap();
+    git.commit("first commit").unwrap();
+    assert!(git.status().unwrap().is_empty());
+    // After the first commit, `restore --staged` is usable again.
+    fs::write(dir.path().join("new.txt"), "changed\n").unwrap();
+    git.stage("new.txt").unwrap();
+    git.unstage("new.txt").unwrap();
+    let entry = git
+        .status()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.path == "new.txt")
+        .expect("new.txt in status");
+    assert_eq!(entry.section, Section::Unstaged);
+}
+
 #[test]
 fn branch_returns_current_name() {
     let dir = make_repo();

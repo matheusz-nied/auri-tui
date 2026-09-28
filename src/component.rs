@@ -34,6 +34,11 @@ pub trait Component {
         None
     }
 
+    /// Panel-specific key hints shown in the status bar when focused.
+    fn hints(&self) -> &'static str {
+        ""
+    }
+
     /// Draw the component into `area`. `focused` indicates it owns the
     /// keyboard focus (highlight the border).
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool);
