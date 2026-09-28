@@ -1,0 +1,47 @@
+# terminal-ide (`tide`)
+
+A terminal IDE written in Rust with [ratatui]. Currently ships a VS Code–style
+git panel: a changes list (staged/unstaged), a side-by-side diff viewer, and a
+commit message input.
+
+## Architecture
+
+Layered and decoupled — the golden rule is **components never call git**:
+
+```
+main.rs        terminal init/restore (+ panic hook), CLI arg = repo path
+app.rs         App: owns components, focus, last-frame rects, the action queue.
+               The ONLY place GitBackend is called; results are broadcast back
+               as actions.
+event.rs       crossterm polling (~250 ms) + a ~2 s Tick that drives Refresh
+action.rs      Action enum — the single message type everything speaks
+component.rs   Component trait — implement it to add a panel
+git/           model types + GitBackend trait; `cli` shells out to git,
+               `parse` has pure, unit-tested parsing functions
+components/    commit_input.rs, changes.rs, diff_view.rs
+```
+
+Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
+`update` → `App` enqueues it → side-effecting actions (`Refresh`,
+`ToggleStage`, `Commit`, `SelectFile`) are executed by `App` via
+`Box<dyn GitBackend>` → results (`StatusLoaded`, `DiffLoaded`, `Error`) are
+broadcast to every component's `update`.
+
+### Adding a new panel
+
+1. Add a `PanelId` variant in `action.rs`.
+2. Implement `Component` for the panel in `src/components/`.
+3. Register it in `App::new` and give it a rect in `App::render`.
+4. If it needs new data or triggers new side effects, add `Action` variants
+   and handle them in `App::execute`.
+
+## Commands
+
+```sh
+cargo run -- [repo]                              # run (defaults to cwd); binary is `tide`
+cargo test                                       # unit + integration tests
+cargo clippy --all-targets -- -D warnings        # lint
+cargo fmt --check                                # format check (cargo fmt to fix)
+```
+
+[ratatui]: https://ratatui.rs

@@ -1,0 +1,157 @@
+//! `GitBackend` implementation that shells out to the `git` binary.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use anyhow::{bail, Context, Result};
+
+use super::parse::{parse_diff, parse_status};
+use super::{DiffDoc, FileChange, GitBackend, Section};
+
+/// Context size for diffs: effectively the whole file, like VS Code.
+const FULL_CONTEXT: &str = "-U100000";
+
+/// Talks to git by spawning the `git` CLI in a fixed repository root.
+pub struct CliGit {
+    root: PathBuf,
+}
+
+impl CliGit {
+    /// `root` should be the repo toplevel (e.g. from `git rev-parse
+    /// --show-toplevel`).
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Run `git -C <root> <args>` and return the raw output.
+    /// `ok_codes` lists exit codes treated as success besides 0 (used for
+    /// `diff --no-index`, which exits 1 when files differ).
+    fn run(&self, args: &[&str], ok_codes: &[i32]) -> Result<Output> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .output()
+            .context("failed to spawn git")?;
+        let ok = output.status.success()
+            || output
+                .status
+                .code()
+                .is_some_and(|code| ok_codes.contains(&code));
+        if !ok {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        }
+        Ok(output)
+    }
+}
+
+impl GitBackend for CliGit {
+    fn status(&self) -> Result<Vec<FileChange>> {
+        let out = self.run(
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &[],
+        )?;
+        Ok(parse_status(&out.stdout))
+    }
+
+    fn diff(&self, file: &FileChange) -> Result<DiffDoc> {
+        let output = match file.section {
+            Section::Staged => {
+                let mut args = vec![
+                    "diff",
+                    "--cached",
+                    "--no-color",
+                    "--no-ext-diff",
+                    FULL_CONTEXT,
+                    "--",
+                ];
+                if let Some(orig) = &file.orig_path {
+                    args.push(orig);
+                }
+                args.push(&file.path);
+                self.run(&args, &[])?
+            }
+            Section::Unstaged => self.run(
+                &[
+                    "diff",
+                    "--no-color",
+                    "--no-ext-diff",
+                    FULL_CONTEXT,
+                    "--",
+                    &file.path,
+                ],
+                &[],
+            )?,
+            // `diff --no-index` exits 1 when the files differ — that is the
+            // normal case, not an error.
+            Section::Untracked => self.run(
+                &[
+                    "diff",
+                    "--no-index",
+                    "--no-color",
+                    FULL_CONTEXT,
+                    "--",
+                    "/dev/null",
+                    &file.path,
+                ],
+                &[1],
+            )?,
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        Ok(parse_diff(&file.path, &text))
+    }
+
+    fn stage(&self, path: &str) -> Result<()> {
+        self.run(&["add", "--", path], &[])?;
+        Ok(())
+    }
+
+    fn unstage(&self, path: &str) -> Result<()> {
+        self.run(&["restore", "--staged", "--", path], &[])?;
+        Ok(())
+    }
+
+    fn stage_all(&self) -> Result<()> {
+        self.run(&["add", "-A"], &[])?;
+        Ok(())
+    }
+
+    fn commit(&self, message: &str) -> Result<()> {
+        self.run(&["commit", "-m", message], &[])?;
+        Ok(())
+    }
+
+    fn branch(&self) -> Result<String> {
+        // Detached HEAD: fall back to the short commit hash.
+        if let Ok(out) = self.run(&["symbolic-ref", "--short", "-q", "HEAD"], &[1]) {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !name.is_empty() {
+                return Ok(name);
+            }
+        }
+        let out = self.run(&["rev-parse", "--short", "HEAD"], &[])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+}
+
+/// Resolve the toplevel of the repo containing `path`, or `None` if `path` is
+/// not inside a git repository.
+pub fn resolve_toplevel(path: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("failed to spawn git — is it installed?")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "'{}' is not inside a git repository: {}",
+            path.display(),
+            stderr.trim()
+        );
+    }
+    let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(PathBuf::from(top))
+}

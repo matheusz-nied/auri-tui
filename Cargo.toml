@@ -1,0 +1,15 @@
+[package]
+name = "terminal-ide"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tide"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "=1.0.104"
+ratatui = "=0.30.2"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
