@@ -89,6 +89,25 @@ pub enum Action {
     /// Commit the staged changes with this message (side effect).
     Commit(String),
     CommitDone,
+    /// Generate a commit message from the staged diff with the configured AI
+    /// CLI (side effect, run by `App` in the background). The result only
+    /// fills the input via `CommitMessageGenerated` — it never commits.
+    GenerateCommitMessage,
+    /// Kill the in-flight generation; the `Cancelled` outcome still flows
+    /// back through `App` as `CommitMessageFailed`.
+    CancelCommitMessage,
+    /// Broadcast when a generation starts; `provider` labels the CLI+model
+    /// (e.g. "codex (gpt-6-luna)") so the input can show progress.
+    CommitMessageGenerating {
+        provider: String,
+    },
+    /// The cleaned one-line message produced by the AI.
+    CommitMessageGenerated(String),
+    /// Generation ended without a message — `CommitInput` clears its busy
+    /// state; the reason (error text or "cancelled") is in the status bar.
+    CommitMessageFailed,
+    /// Switch the AI provider codex<->opencode and persist it (side effect).
+    ToggleAiProvider,
     /// Preferences were (re)loaded — at startup and after each persisted
     /// change. Broadcast so components can read their section.
     PreferencesChanged(Preferences),

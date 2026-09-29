@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::ai::AiPrefs;
+
 /// The root preferences document. Add a new section as a field with
 /// `#[serde(default)]` — missing keys in existing files then deserialize
 /// to defaults, and unknown keys are ignored.
@@ -23,6 +25,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Preferences {
     pub layout: LayoutPrefs,
+    /// AI commit-message generation (`[ai]` section).
+    pub ai: AiPrefs,
 }
 
 /// Sidebar geometry persisted between runs.
@@ -197,6 +201,7 @@ mod tests {
                 sidebar_visible: false,
                 history_height: Some(9),
             },
+            ..Default::default()
         };
         store.save(&prefs).unwrap();
         // Parent dirs created, no temp file left behind.

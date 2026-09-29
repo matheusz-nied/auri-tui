@@ -60,6 +60,10 @@ impl CliGit {
 }
 
 impl GitBackend for CliGit {
+    fn root(&self) -> PathBuf {
+        self.root.clone()
+    }
+
     fn status(&self) -> Result<Vec<FileChange>> {
         let out = self.run(
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -247,6 +251,18 @@ impl GitBackend for CliGit {
         let out = self.run(&args, &[])?;
         let text = String::from_utf8_lossy(&out.stdout);
         Ok(parse_diff(&file.path, &text))
+    }
+
+    fn staged_patch(&self) -> Result<(String, String)> {
+        let stat = self.run(
+            &["diff", "--cached", "--no-color", "--no-ext-diff", "--stat"],
+            &[],
+        )?;
+        let diff = self.run(&["diff", "--cached", "--no-color", "--no-ext-diff"], &[])?;
+        Ok((
+            String::from_utf8_lossy(&stat.stdout).into_owned(),
+            String::from_utf8_lossy(&diff.stdout).into_owned(),
+        ))
     }
 }
 

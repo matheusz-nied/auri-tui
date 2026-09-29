@@ -18,6 +18,10 @@ action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
 git/           model types + GitBackend trait; `cli` shells out to git,
                `parse` has pure, unit-tested parsing functions
+ai/            AI commit-message generation: pure prompt/cleanup helpers +
+               `AiRunner` trait; `ProcessRunner` spawns the CLI (codex or
+               opencode) on background threads — the app's one async side
+               effect, polled by App once per loop
 components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                hitbox.rs, confirm_dialog.rs (modal overlay example)
 layout.rs      sidebar geometry: width/clamps/divider+split drag — pure,
@@ -41,6 +45,18 @@ cleared. `Changes`/`History` each carry an `active` flag so only the list
 that owns the diff draws a strong selection; a status tick while a commit
 diff is open never steals it back. `History` refetches only when `head()`
 moves.
+
+AI commit messages: Ctrl-G (any panel, when no overlay captures input) or
+the ✦ button in the commit box runs `GenerateCommitMessage` — `App` gathers
+the staged patch (`git.staged_patch()` + `log(0, 10)` subjects), builds the
+`ai::build_prompt` stdin and starts `ai::command()` on `Box<dyn AiRunner>`
+(fake it via `with_ai_runner` in tests). `poll_ai` maps each `AiOutcome` to
+`CommitMessageGenerated`/`CommitMessageFailed`; the cleaned one-line result
+only fills the input — it never commits. Esc while running sends
+`CancelCommitMessage` (kills the child). Ctrl-T toggles
+`prefs.ai.provider` codex<->opencode (persisted via `save_prefs`). `[ai]`
+prefs: `provider`, `codex_model`, `codex_reasoning_effort`,
+`opencode_model`, `timeout_secs`, `max_diff_chars`.
 
 ### Clickable buttons — `components/hitbox.rs`
 

@@ -10,6 +10,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::action::{Action, PanelId};
+use crate::ai::{self, AiOutcome, AiProvider, AiRunner, ProcessRunner};
 use crate::component::Component;
 use crate::components::changes::Changes;
 use crate::components::commit_input::CommitInput;
@@ -28,6 +29,8 @@ use crate::prefs::{Preferences, PrefsStore};
 /// components as new actions.
 pub struct App {
     git: Box<dyn GitBackend>,
+    /// Background AI commit-message generation; polled once per loop.
+    ai: Box<dyn AiRunner>,
     events: Events,
     /// Panels in focus-cycling order.
     components: Vec<(PanelId, Box<dyn Component>)>,
@@ -92,6 +95,7 @@ impl App {
     pub fn new(git: Box<dyn GitBackend>, store: Box<dyn PrefsStore>) -> Self {
         let mut app = Self {
             git,
+            ai: Box::new(ProcessRunner::default()),
             events: Events::default(),
             components: vec![
                 (PanelId::CommitInput, Box::new(CommitInput::default())),
@@ -140,6 +144,12 @@ impl App {
         app
     }
 
+    /// Test hook: swap in a fake AI runner.
+    pub fn with_ai_runner(mut self, r: Box<dyn AiRunner>) -> Self {
+        self.ai = r;
+        self
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.enqueue(Action::Refresh);
         while self.running {
@@ -151,6 +161,7 @@ impl App {
                     self.handle_event(ev);
                 }
             }
+            self.poll_ai();
             self.dispatch();
             self.sync_prefs();
             if self.dirty {
@@ -332,6 +343,9 @@ impl App {
             Action::CommitDone => {
                 self.message = Some(("Committed".to_string(), false));
             }
+            Action::GenerateCommitMessage => self.start_ai_generation(),
+            Action::CancelCommitMessage => self.ai.cancel(),
+            Action::ToggleAiProvider => self.toggle_ai_provider(),
             Action::Error(msg) => {
                 self.message = Some((msg, true));
             }
@@ -346,6 +360,9 @@ impl App {
             | Action::DiffNextChange
             | Action::HistoryLoaded { .. }
             | Action::CommitFilesLoaded { .. }
+            | Action::CommitMessageGenerating { .. }
+            | Action::CommitMessageGenerated(_)
+            | Action::CommitMessageFailed
             | Action::PreferencesChanged(_) => {}
         }
     }
@@ -358,12 +375,116 @@ impl App {
             return;
         }
         self.prefs.layout = cur;
+        self.save_prefs();
+    }
+
+    /// Write `self.prefs` through the store (skipped entirely when the
+    /// initial load failed — a corrupt file is never overwritten) and
+    /// broadcast `PreferencesChanged`.
+    fn save_prefs(&mut self) {
         if self.prefs_writable {
             if let Err(e) = self.store.save(&self.prefs) {
                 self.enqueue(Action::Error(format!("saving preferences: {e}")));
             }
         }
         self.enqueue(Action::PreferencesChanged(self.prefs.clone()));
+    }
+
+    /// Non-blocking check on the background AI generation; a finished
+    /// outcome becomes broadcast actions. Called once per loop iteration.
+    fn poll_ai(&mut self) {
+        let Some(outcome) = self.ai.poll() else {
+            return;
+        };
+        match outcome {
+            AiOutcome::Done(raw) => match ai::clean_output(&raw) {
+                Some(msg) => self.enqueue(Action::CommitMessageGenerated(msg)),
+                None => {
+                    self.enqueue(Action::CommitMessageFailed);
+                    self.enqueue(Action::Error("AI returned an empty message".to_string()));
+                }
+            },
+            AiOutcome::Failed(e) => {
+                self.enqueue(Action::CommitMessageFailed);
+                self.enqueue(Action::Error(e));
+            }
+            AiOutcome::Cancelled => {
+                self.enqueue(Action::CommitMessageFailed);
+                self.message = Some(("Generation cancelled".to_string(), false));
+            }
+        }
+    }
+
+    /// `GenerateCommitMessage`: gather the staged diff and recent subjects,
+    /// then spawn the configured AI CLI in the background.
+    fn start_ai_generation(&mut self) {
+        if self.ai.is_running() {
+            return;
+        }
+        let staged = self
+            .last_status
+            .iter()
+            .any(|f| f.section == Section::Staged);
+        if !staged {
+            self.enqueue(Action::Error("Nothing staged".to_string()));
+            return;
+        }
+        let prompt = match self.git.staged_patch().and_then(|(stat, diff)| {
+            let subjects = self
+                .git
+                .log(0, 10)?
+                .into_iter()
+                .map(|c| c.subject)
+                .collect::<Vec<_>>();
+            Ok(ai::build_prompt(
+                &subjects,
+                &stat,
+                &diff,
+                self.prefs.ai.max_diff_chars,
+            ))
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                self.enqueue(Action::Error(format!("ai: {e}")));
+                return;
+            }
+        };
+        let cmd = ai::command(&self.prefs.ai, &self.git.root());
+        match self.ai.start(cmd, prompt) {
+            Ok(()) => {
+                let provider = self.ai_provider_label();
+                self.enqueue(Action::CommitMessageGenerating {
+                    provider: provider.clone(),
+                });
+                self.message = Some((
+                    format!("Generating commit message with {provider}… (Esc to cancel)"),
+                    false,
+                ));
+            }
+            Err(e) => self.enqueue(Action::Error(format!("{e}"))),
+        }
+    }
+
+    /// "codex (gpt-6-luna)"-style label for status/progress messages.
+    fn ai_provider_label(&self) -> String {
+        let ai = &self.prefs.ai;
+        match ai.provider {
+            AiProvider::Codex => format!("codex ({})", ai.codex_model),
+            AiProvider::Opencode => format!("opencode ({})", ai.opencode_model),
+        }
+    }
+
+    /// `ToggleAiProvider`: flip the provider and persist it.
+    fn toggle_ai_provider(&mut self) {
+        self.prefs.ai.provider = match self.prefs.ai.provider {
+            AiProvider::Codex => AiProvider::Opencode,
+            AiProvider::Opencode => AiProvider::Codex,
+        };
+        self.save_prefs();
+        self.message = Some((
+            format!("AI provider: {}", self.prefs.ai.provider.name()),
+            false,
+        ));
     }
 
     /// Reload the diff of the currently selected file, if it still exists in
@@ -435,6 +556,25 @@ impl App {
             if let Some(action) = overlay.handle_key(key) {
                 self.enqueue(action);
             }
+            return;
+        }
+        // AI keys work from every panel — including while typing a message.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('g') => {
+                    self.enqueue(Action::GenerateCommitMessage);
+                    return;
+                }
+                KeyCode::Char('t') => {
+                    self.enqueue(Action::ToggleAiProvider);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Esc cancels an in-flight generation before its other meanings.
+        if key.code == KeyCode::Esc && self.ai.is_running() {
+            self.enqueue(Action::CancelCommitMessage);
             return;
         }
         let commit_focused = self.focus == PanelId::CommitInput;
@@ -658,15 +798,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{AiCommand, AiRunner};
     use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
     use crate::prefs::{FileStore, LayoutPrefs, MemoryStore};
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::rc::Rc;
 
     /// Minimal backend so `App` can be constructed without a repo.
     struct FakeGit;
 
     impl GitBackend for FakeGit {
+        fn root(&self) -> PathBuf {
+            PathBuf::from("/repo")
+        }
         fn status(&self) -> Result<Vec<FileChange>> {
             Ok(vec![])
         }
@@ -715,6 +862,63 @@ mod tests {
                 code: 'M',
             })
         }
+        fn staged_patch(&self) -> Result<(String, String)> {
+            Ok((
+                " f.txt | 2 +-".to_string(),
+                "diff --git a/f.txt b/f.txt\n+STAGED_PATCH".to_string(),
+            ))
+        }
+    }
+
+    /// Records what `start` received and lets the test inject an outcome.
+    #[derive(Clone, Default)]
+    struct FakeRunner {
+        state: Rc<RefCell<FakeAiState>>,
+    }
+
+    #[derive(Default)]
+    struct FakeAiState {
+        running: bool,
+        started: Option<(AiCommand, String)>,
+        outcome: Option<AiOutcome>,
+    }
+
+    impl AiRunner for FakeRunner {
+        fn start(&mut self, cmd: AiCommand, stdin: String) -> Result<()> {
+            if self.state.borrow().running {
+                anyhow::bail!("already running");
+            }
+            let mut s = self.state.borrow_mut();
+            s.running = true;
+            s.started = Some((cmd, stdin));
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<AiOutcome> {
+            let mut s = self.state.borrow_mut();
+            let outcome = s.outcome.take();
+            if outcome.is_some() {
+                s.running = false;
+            }
+            outcome
+        }
+        fn cancel(&mut self) {
+            let mut s = self.state.borrow_mut();
+            if s.running {
+                s.outcome = Some(AiOutcome::Cancelled);
+            }
+        }
+        fn is_running(&self) -> bool {
+            self.state.borrow().running
+        }
+    }
+
+    fn staged_file() -> FileChange {
+        FileChange {
+            path: "f.txt".to_string(),
+            orig_path: None,
+            section: Section::Staged,
+            code: 'M',
+        }
     }
 
     fn app(store: MemoryStore) -> App {
@@ -737,6 +941,7 @@ mod tests {
                 sidebar_width: Some(50),
                 ..Default::default()
             },
+            ..Default::default()
         }));
         let app = app(store);
         assert_eq!(app.sidebar.width_for(200), 50);
@@ -749,6 +954,7 @@ mod tests {
                 sidebar_width: Some(50),
                 ..Default::default()
             },
+            ..Default::default()
         }));
         let mut app = app(store.clone());
         app.main_area = Rect::new(0, 0, 200, 30);
@@ -832,5 +1038,124 @@ mod tests {
         // Once input has been quiet for REFRESH_IDLE, refresh again.
         assert!(should_refresh(Some(now - REFRESH_IDLE), now));
         assert!(should_refresh(Some(now - Duration::from_secs(10)), now));
+    }
+
+    /// An App with a FakeRunner and, when `staged`, a staged change loaded.
+    fn ai_app(staged: bool) -> (App, FakeRunner) {
+        let runner = FakeRunner::default();
+        let mut app = app(MemoryStore::new(None)).with_ai_runner(Box::new(runner.clone()));
+        app.dispatch(); // flush the startup queue
+        if staged {
+            app.enqueue(Action::StatusLoaded(vec![staged_file()]));
+            app.dispatch();
+        }
+        (app, runner)
+    }
+
+    #[test]
+    fn generate_with_nothing_staged_errors_without_starting() {
+        let (mut app, runner) = ai_app(false);
+        app.enqueue(Action::GenerateCommitMessage);
+        app.dispatch();
+        assert!(
+            matches!(&app.message, Some((m, true)) if m == "Nothing staged"),
+            "{:?}",
+            app.message
+        );
+        assert!(runner.state.borrow().started.is_none());
+    }
+
+    #[test]
+    fn generate_starts_runner_with_staged_patch() {
+        let (mut app, runner) = ai_app(true);
+        app.enqueue(Action::GenerateCommitMessage);
+        app.dispatch();
+        let s = runner.state.borrow();
+        let (cmd, stdin) = s.started.as_ref().expect("runner should start");
+        assert_eq!(cmd.program, "codex");
+        assert!(stdin.contains("+STAGED_PATCH"), "stdin: {stdin}");
+        drop(s);
+        assert!(
+            matches!(&app.message, Some((m, false)) if m.contains("Generating commit message")),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn generated_message_fills_commit_input() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (mut app, runner) = ai_app(true);
+        app.enqueue(Action::GenerateCommitMessage);
+        app.dispatch();
+        runner.state.borrow_mut().outcome =
+            Some(AiOutcome::Done("```\nfeat: add x\n```\n".to_string()));
+        app.poll_ai();
+        app.dispatch();
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| app.render(f)).unwrap();
+        let buf = term.backend().buffer();
+        let mut text = String::new();
+        for y in buf.area.top()..buf.area.bottom() {
+            for x in buf.area.left()..buf.area.right() {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("feat: add x"), "buffer:\n{text}");
+    }
+
+    #[test]
+    fn failed_generation_shows_error_status() {
+        let (mut app, runner) = ai_app(true);
+        app.enqueue(Action::GenerateCommitMessage);
+        app.dispatch();
+        runner.state.borrow_mut().outcome = Some(AiOutcome::Failed("boom".to_string()));
+        app.poll_ai();
+        app.dispatch();
+        assert!(
+            matches!(&app.message, Some((m, true)) if m == "boom"),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn esc_cancels_running_generation() {
+        let (mut app, runner) = ai_app(true);
+        app.enqueue(Action::GenerateCommitMessage);
+        app.dispatch();
+        assert!(runner.state.borrow().running);
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        app.dispatch(); // CancelCommitMessage -> runner.cancel()
+        app.poll_ai();
+        app.dispatch(); // CommitMessageFailed
+        assert!(!runner.state.borrow().running);
+        assert!(
+            matches!(&app.message, Some((m, false)) if m == "Generation cancelled"),
+            "{:?}",
+            app.message
+        );
+    }
+
+    #[test]
+    fn toggle_provider_persists() {
+        let store = MemoryStore::new(None);
+        let mut app = app(store.clone());
+        app.dispatch();
+        app.enqueue(Action::ToggleAiProvider);
+        app.dispatch();
+        assert_eq!(
+            store.saved().unwrap().ai.provider,
+            AiProvider::Opencode,
+            "provider should persist as opencode"
+        );
+        assert!(
+            matches!(&app.message, Some((m, false)) if m == "AI provider: opencode"),
+            "{:?}",
+            app.message
+        );
     }
 }

@@ -1,6 +1,8 @@
 pub mod cli;
 pub mod parse;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 /// Which section of the status list a change belongs to. A single file can
@@ -103,6 +105,8 @@ pub enum DiffSource {
 /// live behind `Box<dyn GitBackend>` inside `App`, so components stay fully
 /// decoupled from git and can be tested with a mock backend.
 pub trait GitBackend {
+    /// The repository toplevel this backend operates on.
+    fn root(&self) -> PathBuf;
     fn status(&self) -> Result<Vec<FileChange>>;
     fn diff(&self, file: &FileChange) -> Result<DiffDoc>;
     fn stage(&self, path: &str) -> Result<()>;
@@ -124,4 +128,7 @@ pub trait GitBackend {
     /// Full-context diff of `file` between the commit's first parent (or the
     /// empty tree) and the commit itself.
     fn commit_diff(&self, hash: &str, file: &CommitFile) -> Result<DiffDoc>;
+    /// Raw staged patch for the AI prompt: the `--stat` summary and the
+    /// default-context `diff --cached` output.
+    fn staged_patch(&self) -> Result<(String, String)>;
 }
