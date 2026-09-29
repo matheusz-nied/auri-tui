@@ -1,4 +1,4 @@
-//! The Explorer / Source Control tab bar on the sidebar's top row. Not a
+//! The Explorer / Source Control tab bar on the sidebar's top rows. Not a
 //! `Component` (never focused): `App` draws it each frame and resolves
 //! clicks through the returned hitboxes.
 
@@ -17,9 +17,15 @@ const TABS: [(SidebarView, &str, &str); 2] = [
     (SidebarView::SourceControl, "Source Control", "Git"),
 ];
 
-/// Draw two equal-width tabs into `area` (the active one highlighted) and
-/// register each as a `SetSidebarView` button. Labels shorten when a half
-/// is too narrow for the full names.
+const ACTIVE_BG: Color = Color::Rgb(40, 45, 65);
+const INACTIVE_BG: Color = Color::Rgb(25, 25, 32);
+
+/// Draw two equal-width 1-row tabs on `area`'s first row (the active one
+/// highlighted) and register each as a `SetSidebarView` button; the rows
+/// below are left blank as spacing before the panels. Labels shorten when a
+/// half is too narrow for the full names. (Taller tabs can't center their
+/// label at even heights, and half-block `▄`/`▀` edges leave a visible seam
+/// in Terminal.app.)
 pub fn render(f: &mut Frame, area: Rect, active: SidebarView, hits: &mut Hitboxes) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -44,17 +50,17 @@ pub fn render(f: &mut Frame, area: Rect, active: SidebarView, hits: &mut Hitboxe
             "",
             right = w - left - label.chars().count()
         );
-        let style = if view == active {
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(40, 45, 65))
-                .add_modifier(Modifier::BOLD)
+        let (bg, label_style) = if view == active {
+            (
+                ACTIVE_BG,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
-            Style::default()
-                .fg(Color::DarkGray)
-                .bg(Color::Rgb(25, 25, 32))
+            (INACTIVE_BG, Style::default().fg(Color::DarkGray))
         };
-        f.render_widget(Span::styled(text, style), rect);
+        f.render_widget(Span::styled(text, label_style.bg(bg)), rect);
         hits.push(rect, Action::SetSidebarView(view));
     }
 }
@@ -67,11 +73,18 @@ mod tests {
 
     fn draw(width: u16, active: SidebarView) -> (String, Hitboxes) {
         let mut hits = Hitboxes::default();
-        let mut term = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(width, 2)).unwrap();
         term.draw(|f| render(f, f.area(), active, &mut hits))
             .unwrap();
         let buf = term.backend().buffer();
+        // Tabs on row 0; row 1 is blank spacing (no tab background).
         let text = (0..width).map(|x| buf[(x, 0)].symbol()).collect();
+        for x in [0, width - 1] {
+            assert_ne!(buf[(x, 0)].bg, Color::Reset);
+            assert_eq!(buf[(x, 1)].symbol(), " ");
+            assert_eq!(buf[(x, 1)].bg, Color::Reset);
+            assert!(hits.hit(x, 1).is_none(), "spacing isn't clickable");
+        }
         (text, hits)
     }
 

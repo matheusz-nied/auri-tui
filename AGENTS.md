@@ -119,6 +119,7 @@ tree) or Source Control (commit input + changes + commit history).
 `Sidebar` owns width/visibility/view/drag state plus the changes/history
 split; `compute()` returns the panel rects each frame.
 The sidebar's top row is a clickable Explorer | Source Control tab bar
+(followed by a blank spacing row)
 (`components/view_tabs.rs`, drawn by `App` with its own `tab_hits`
 hitboxes → `Action::SetSidebarView`; labels shorten to Files | Git when
 narrow). `Sidebar::on_mouse` consumes divider presses/drags (vertical =

@@ -1445,11 +1445,12 @@ mod tests {
     #[test]
     fn tab_bar_click_switches_views() {
         let (mut app, _fs) = explorer_app(MemoryStore::new(None));
-        // 120 cols: sidebar = 42, tabs = two 21-col halves on row 0.
+        // 120 cols: sidebar = 42, tabs = two 21-col halves on row 0 (row 1
+        // is spacing).
         let text = screen(&mut app);
+        let labels = text.lines().next().unwrap();
         assert!(
-            text.lines().next().unwrap().contains("Explorer")
-                && text.lines().next().unwrap().contains("Source Control"),
+            labels.contains("Explorer") && labels.contains("Source Control"),
             "{text}"
         );
         app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 0));
