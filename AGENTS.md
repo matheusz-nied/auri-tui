@@ -29,6 +29,8 @@ fs/            workspace reads: model types + FsBackend trait; `local` is
 components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                file_tree.rs, file_view.rs, hitbox.rs, confirm_dialog.rs
                (modal overlay example)
+highlight.rs   syntax highlighting (syntect + two-face = bat's grammars,
+               embedded, OneHalfDark): pure, incremental `Highlighter`
 layout.rs      sidebar geometry: view (Explorer/Source Control), width/
                clamps/divider+split drag — pure, unit-tested
 prefs/         persisted user preferences: `Preferences` (TOML document),
@@ -70,6 +72,16 @@ arrives). On `Refresh` `App` re-reads the open file only when
 not shown; tabs are expanded and control chars replaced at load. Tree rows
 get git decorations from `StatusLoaded` (`file_tree::decorations`). Tests
 fake the filesystem with `FakeFs` in `app.rs`.
+
+Syntax highlighting (`highlight.rs`) is pure, so components own it:
+`FileView` keeps one `Highlighter` per doc, `DiffView` one per side (with
+full-context diffs each side's cells in order *are* the old/new file).
+The grammar is picked by file name, extension, then first line. It is
+stateful, so `advance()` highlights from the top only as far as the view
+has scrolled and caches it; a reload restarts it. Past `MAX_LINES` or
+after a line over `MAX_LINE_BYTES` (minified code) lines render plain.
+Only fg + bold/italic are applied, so diff backgrounds show through.
+`[profile.dev.package."*"] opt-level = 3` keeps it fast in debug builds.
 
 AI commit messages: Ctrl-G (any panel, when no overlay captures input) or
 the ✦ button in the commit box runs `GenerateCommitMessage` — `App` gathers

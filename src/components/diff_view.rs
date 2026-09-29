@@ -7,7 +7,8 @@ use ratatui::Frame;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::git::{CellKind, DiffCell, DiffDoc, DiffSource, RowKind};
+use crate::git::{CellKind, DiffCell, DiffDoc, DiffRow, DiffSource, RowKind};
+use crate::highlight::Highlighter;
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, SCROLL_LINES};
@@ -17,10 +18,15 @@ const ADDED_BG: Color = Color::Rgb(20, 50, 20);
 const FILLER_BG: Color = Color::Rgb(30, 30, 30);
 
 /// Side-by-side diff viewer. Each half shows a right-aligned line-number
-/// gutter plus text; removed cells are red, added cells green, and empty
-/// filler cells are hatched.
+/// gutter plus syntax-highlighted text; removed cells get a red background,
+/// added cells green, and empty filler cells are hatched.
 pub struct DiffView {
     doc: Option<DiffDoc>,
+    /// One highlighter per side: the old side's cells in order are the old
+    /// file (diffs have full context), the new side's the new file.
+    highlighters: [Highlighter; 2],
+    /// Per row, the index of each side's cell within that side's sequence.
+    side_index: Vec<[Option<usize>; 2]>,
     /// What the current `doc` belongs to; a working-tree source is cleared
     /// when it disappears from the status, a commit source never is.
     source: Option<DiffSource>,
@@ -36,6 +42,8 @@ impl Default for DiffView {
     fn default() -> Self {
         Self {
             doc: None,
+            highlighters: [Highlighter::plain(), Highlighter::plain()],
+            side_index: Vec::new(),
             source: None,
             scroll_y: 0,
             scroll_x: 0,
@@ -58,6 +66,26 @@ impl DiffView {
             .map(|c| c.text.chars().count())
             .max()
             .unwrap_or(0);
+        let mut counts = [0; 2];
+        self.side_index = doc
+            .rows
+            .iter()
+            .map(|row| {
+                let mut idx = [None; 2];
+                for (side, n) in counts.iter_mut().enumerate() {
+                    if side_cell(row, side).is_some() {
+                        idx[side] = Some(*n);
+                        *n += 1;
+                    }
+                }
+                idx
+            })
+            .collect();
+        // New contents: highlighting restarts from the top of each side.
+        self.highlighters = [0, 1].map(|side| {
+            let first = doc.rows.iter().find_map(|r| side_cell(r, side));
+            Highlighter::for_file(&doc.path, first.map(|c| c.text.as_str()))
+        });
         if fresh {
             self.scroll_y = doc
                 .rows
@@ -72,6 +100,7 @@ impl DiffView {
 
     fn clear(&mut self) {
         self.doc = None;
+        self.side_index.clear();
         self.source = None;
         self.scroll_y = 0;
         self.scroll_x = 0;
@@ -116,35 +145,53 @@ impl DiffView {
     }
 }
 
-/// Build one pane line from a cell: right-aligned gutter + cropped/padded
-/// text. `None` cells become hatched fillers.
+/// A row's cell on one side (0 = old/left, 1 = new/right). Hunk headers
+/// carry their text in `left` but are not file lines.
+fn side_cell(row: &DiffRow, side: usize) -> Option<&DiffCell> {
+    if row.kind == RowKind::HunkHeader {
+        return None;
+    }
+    if side == 0 {
+        row.left.as_ref()
+    } else {
+        row.right.as_ref()
+    }
+}
+
+/// Build one pane line from a cell: right-aligned gutter + highlighted,
+/// cropped and padded text on the cell's added/removed background. `None`
+/// cells become hatched fillers.
 fn cell_line(
-    cell: Option<&DiffCell>,
+    cell: Option<(&DiffCell, usize)>,
+    highlighter: &Highlighter,
     gutter_w: usize,
     text_w: usize,
     scroll_x: usize,
 ) -> Line<'static> {
-    let (gutter, raw_text, style) = match cell {
-        Some(c) => {
-            let style = match c.kind {
-                CellKind::Removed => Style::default().bg(REMOVED_BG),
-                CellKind::Added => Style::default().bg(ADDED_BG),
-                CellKind::Context => Style::default(),
-            };
-            (format!("{:>gutter_w$} ", c.line_no), c.text.clone(), style)
-        }
-        None => (
-            " ".repeat(gutter_w + 1),
-            "░".repeat(text_w + scroll_x),
-            Style::default().fg(Color::DarkGray).bg(FILLER_BG),
-        ),
+    let gutter_style = Style::default().fg(Color::DarkGray);
+    let Some((c, idx)) = cell else {
+        let filler: String = "░".repeat(text_w);
+        return Line::from(vec![
+            Span::styled(" ".repeat(gutter_w + 1), gutter_style),
+            Span::styled(filler, Style::default().fg(Color::DarkGray).bg(FILLER_BG)),
+        ]);
     };
-    let text: String = raw_text.chars().skip(scroll_x).take(text_w).collect();
-    let pad = text_w.saturating_sub(text.chars().count());
-    Line::from(vec![
-        Span::styled(gutter, Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{text}{:pad$}", ""), style),
-    ])
+    let bg = match c.kind {
+        CellKind::Removed => Style::default().bg(REMOVED_BG),
+        CellKind::Added => Style::default().bg(ADDED_BG),
+        CellKind::Context => Style::default(),
+    };
+    let mut spans = vec![Span::styled(
+        format!("{:>gutter_w$} ", c.line_no),
+        gutter_style,
+    )];
+    let mut used = 0;
+    for span in highlighter.spans(idx, &c.text, scroll_x, text_w) {
+        used += span.content.chars().count();
+        spans.push(span.patch_style(bg));
+    }
+    spans.push(Span::styled(" ".repeat(text_w.saturating_sub(used)), bg));
+    Line::from(spans)
 }
 
 fn hunk_header_line(text: &str, gutter_w: usize, text_w: usize) -> Line<'static> {
@@ -313,9 +360,17 @@ impl Component for DiffView {
         // rows and Paragraph::scroll would overflow at u16::MAX anyway.
         let start = self.scroll_y.min(doc.rows.len());
         let end = (start + self.view_height).min(doc.rows.len());
+        let visible_index = &self.side_index[start..end];
+        for (side, highlighter) in self.highlighters.iter_mut().enumerate() {
+            let upto = visible_index.iter().filter_map(|idx| idx[side]).max();
+            if let Some(upto) = upto {
+                let texts = doc.rows.iter().filter_map(|r| side_cell(r, side));
+                highlighter.advance(texts.map(|c| c.text.as_str()), upto + 1);
+            }
+        }
         let mut left_lines = Vec::with_capacity(end - start);
         let mut right_lines = Vec::with_capacity(end - start);
-        for row in &doc.rows[start..end] {
+        for (row, idx) in doc.rows[start..end].iter().zip(visible_index) {
             match row.kind {
                 RowKind::HunkHeader => {
                     let text = row.left.as_ref().map(|c| c.text.as_str()).unwrap_or("");
@@ -324,13 +379,15 @@ impl Component for DiffView {
                 }
                 _ => {
                     left_lines.push(cell_line(
-                        row.left.as_ref(),
+                        row.left.as_ref().zip(idx[0]),
+                        &self.highlighters[0],
                         gutter_w,
                         text_w(halves[0]),
                         self.scroll_x,
                     ));
                     right_lines.push(cell_line(
-                        row.right.as_ref(),
+                        row.right.as_ref().zip(idx[1]),
+                        &self.highlighters[1],
                         gutter_w,
                         text_w(halves[1]),
                         self.scroll_x,
@@ -464,6 +521,37 @@ mod tests {
 
         v.update(&Action::DiffNextChange);
         assert_eq!(v.scroll_y, 10);
+    }
+
+    #[test]
+    fn cells_are_highlighted_on_their_diff_background() {
+        let mut v = DiffView::default();
+        let cell = |text: &str, kind| {
+            Some(DiffCell {
+                line_no: 1,
+                text: text.to_string(),
+                kind,
+            })
+        };
+        v.update(&Action::DiffLoaded(DiffDoc {
+            path: "f.rs".to_string(),
+            rows: vec![DiffRow {
+                left: cell("let a = 1;", CellKind::Removed),
+                right: cell("fn b() {}", CellKind::Added),
+                kind: RowKind::Changed,
+            }],
+            binary: false,
+        }));
+        let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        term.draw(|f| v.render(f, f.area(), true)).unwrap();
+        let buf = term.backend().buffer();
+        // Left half: border + "1 " gutter, text from col 3; right from 22.
+        let (left, right) = (&buf[(3, 1)], &buf[(22, 1)]);
+        assert_eq!((left.symbol(), right.symbol()), ("l", "f"));
+        assert_eq!((left.bg, right.bg), (REMOVED_BG, ADDED_BG));
+        assert!(matches!(left.fg, Color::Rgb(..)), "{:?}", left.fg);
+        // Padding past the text keeps the background.
+        assert_eq!(buf[(18, 1)].bg, REMOVED_BG);
     }
 
     fn commit_file() -> (Commit, CommitFile) {

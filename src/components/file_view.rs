@@ -8,23 +8,38 @@ use ratatui::Frame;
 use crate::action::Action;
 use crate::component::Component;
 use crate::fs::{FileDoc, MAX_FILE_BYTES};
+use crate::highlight::Highlighter;
 
 use super::{border_style, SCROLL_LINES};
 
 /// Columns moved per horizontal scroll step.
 const H_STEP: usize = 4;
 
-/// Read-only file viewer: line-number gutter + text, vertical and
-/// horizontal scrolling. Shares the main pane with `DiffView` — `App`
-/// renders whichever one owns it.
-#[derive(Default)]
+/// Read-only file viewer: line-number gutter + syntax-highlighted text,
+/// vertical and horizontal scrolling. Shares the main pane with `DiffView`
+/// — `App` renders whichever one owns it.
 pub struct FileView {
     doc: Option<FileDoc>,
+    /// Colors for `doc`, computed lazily as far as the view has scrolled.
+    highlighter: Highlighter,
     scroll_y: usize,
     scroll_x: usize,
     view_height: usize,
     /// Longest line in chars, clamps horizontal scrolling.
     max_width: usize,
+}
+
+impl Default for FileView {
+    fn default() -> Self {
+        Self {
+            doc: None,
+            highlighter: Highlighter::plain(),
+            scroll_y: 0,
+            scroll_x: 0,
+            view_height: 0,
+            max_width: 0,
+        }
+    }
 }
 
 impl FileView {
@@ -41,6 +56,8 @@ impl FileView {
             self.scroll_y = 0;
             self.scroll_x = 0;
         }
+        // A reload means new contents: highlighting restarts from the top.
+        self.highlighter = Highlighter::for_file(&doc.path, doc.lines.first().map(String::as_str));
         self.doc = Some(doc);
         self.clamp_scroll();
     }
@@ -148,6 +165,11 @@ impl Component for FileView {
         let gutter_w = doc.lines.len().to_string().len();
         let text_w = (inner.width as usize).saturating_sub(gutter_w + 1);
         let gutter_style = Style::default().fg(Color::DarkGray);
+        let highlighter = &mut self.highlighter;
+        highlighter.advance(
+            doc.lines.iter().map(String::as_str),
+            self.scroll_y + self.view_height,
+        );
         // Only the visible slice — files can have many thousands of lines.
         let lines: Vec<Line> = doc
             .lines
@@ -156,11 +178,9 @@ impl Component for FileView {
             .skip(self.scroll_y)
             .take(self.view_height)
             .map(|(i, text)| {
-                let visible: String = text.chars().skip(self.scroll_x).take(text_w).collect();
-                Line::from(vec![
-                    Span::styled(format!("{:>gutter_w$} ", i + 1), gutter_style),
-                    Span::raw(visible),
-                ])
+                let mut spans = vec![Span::styled(format!("{:>gutter_w$} ", i + 1), gutter_style)];
+                spans.extend(highlighter.spans(i, text, self.scroll_x, text_w));
+                Line::from(spans)
             })
             .collect();
         f.render_widget(Paragraph::new(lines), inner);
@@ -227,6 +247,25 @@ mod tests {
         // A fresh open resets.
         v.update(&Action::FileLoaded(doc("b", 30)));
         assert_eq!((v.scroll_y, v.scroll_x), (0, 0));
+    }
+
+    #[test]
+    fn source_code_is_highlighted() {
+        let mut v = FileView::default();
+        v.update(&Action::FileLoaded(FileDoc {
+            path: "main.rs".to_string(),
+            lines: vec!["fn main() {}".to_string()],
+            binary: false,
+            truncated: false,
+        }));
+        let mut term = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        term.draw(|f| v.render(f, f.area(), true)).unwrap();
+        let buf = term.backend().buffer();
+        // Row 1: border, "1 ", then `fn` (keyword) and `main` (function).
+        let (kw, func) = (buf[(3, 1)].fg, buf[(6, 1)].fg);
+        assert_eq!(buf[(3, 1)].symbol(), "f");
+        assert!(matches!(kw, Color::Rgb(..)), "{kw:?}");
+        assert_ne!(kw, func);
     }
 
     #[test]

@@ -11,7 +11,14 @@ path = "src/main.rs"
 anyhow = "=1.0.104"
 ratatui = "=0.30.2"
 serde = { version = "=1.0.229", features = ["derive"] }
+syntect = { version = "=5.3.0", default-features = false, features = ["parsing", "regex-fancy", "dump-load"] }
 toml = "=1.1.6"
+two-face = { version = "=0.5.2", default-features = false, features = ["syntect-fancy"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+
+# Syntax highlighting (syntect/fancy-regex) is ~10x slower unoptimized;
+# optimizing dependencies keeps `cargo run` responsive.
+[profile.dev.package."*"]
+opt-level = 3
