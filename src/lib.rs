@@ -5,3 +5,4 @@ pub mod components;
 pub mod event;
 pub mod git;
 pub mod layout;
+pub mod prefs;

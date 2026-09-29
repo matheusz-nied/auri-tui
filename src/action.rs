@@ -1,4 +1,5 @@
 use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
+use crate::prefs::Preferences;
 
 /// Identifies a panel so focus and actions can be routed to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,5 +89,8 @@ pub enum Action {
     /// Commit the staged changes with this message (side effect).
     Commit(String),
     CommitDone,
+    /// Preferences were (re)loaded — at startup and after each persisted
+    /// change. Broadcast so components can read their section.
+    PreferencesChanged(Preferences),
     Error(String),
 }

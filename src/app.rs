@@ -19,6 +19,7 @@ use crate::components::history::{History, HISTORY_PAGE};
 use crate::event::{AppEvent, Events};
 use crate::git::{DiffSource, GitBackend, Section};
 use crate::layout::{self, Sidebar};
+use crate::prefs::{Preferences, PrefsStore};
 
 /// Owns the components, the focus state, the last-frame layout rects and the
 /// action queue. It is the *only* place where `GitBackend` is called: side
@@ -59,6 +60,13 @@ pub struct App {
     /// Last diff doc broadcast to components — compared against fresh loads so
     /// unchanged diffs aren't re-sent on every refresh tick.
     last_diff: Option<crate::git::DiffDoc>,
+    /// Loaded preferences; `App` is the only writer (via `sync_prefs`).
+    prefs: Preferences,
+    /// Where prefs are persisted.
+    store: Box<dyn PrefsStore>,
+    /// `false` when the initial `load()` failed — never save over a file we
+    /// couldn't parse.
+    prefs_writable: bool,
     /// (message, is_error) shown in the status bar.
     message: Option<(String, bool)>,
     /// Last key/mouse event time — periodic refresh is deferred while input
@@ -81,8 +89,8 @@ fn should_refresh(last_input: Option<Instant>, now: Instant) -> bool {
 }
 
 impl App {
-    pub fn new(git: Box<dyn GitBackend>) -> Self {
-        Self {
+    pub fn new(git: Box<dyn GitBackend>, store: Box<dyn PrefsStore>) -> Self {
+        let mut app = Self {
             git,
             events: Events::default(),
             components: vec![
@@ -106,11 +114,30 @@ impl App {
             last_head: None,
             seen_head: false,
             last_diff: None,
+            prefs: Preferences::default(),
+            store,
+            prefs_writable: true,
             message: None,
             last_input: None,
             dirty: true,
             running: true,
+        };
+        match app.store.load() {
+            Ok(prefs) => {
+                app.sidebar.apply_prefs(&prefs.layout);
+                app.prefs = prefs;
+            }
+            // Unreadable/corrupt prefs file: run with defaults and never
+            // overwrite the file the user may want to inspect.
+            Err(e) => {
+                app.prefs_writable = false;
+                app.enqueue(Action::Error(format!(
+                    "preferences: {e} — using defaults, changes won't be saved"
+                )));
+            }
         }
+        app.enqueue(Action::PreferencesChanged(app.prefs.clone()));
+        app
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -125,6 +152,7 @@ impl App {
                 }
             }
             self.dispatch();
+            self.sync_prefs();
             if self.dirty {
                 terminal.draw(|f| self.render(f))?;
                 self.dirty = false;
@@ -317,8 +345,25 @@ impl App {
             | Action::DiffPrevChange
             | Action::DiffNextChange
             | Action::HistoryLoaded { .. }
-            | Action::CommitFilesLoaded { .. } => {}
+            | Action::CommitFilesLoaded { .. }
+            | Action::PreferencesChanged(_) => {}
         }
+    }
+
+    /// Persist the sidebar layout when it changed and no drag is in flight.
+    /// Called once per loop iteration after `dispatch`.
+    fn sync_prefs(&mut self) {
+        let cur = self.sidebar.to_prefs();
+        if self.sidebar.is_dragging() || cur == self.prefs.layout {
+            return;
+        }
+        self.prefs.layout = cur;
+        if self.prefs_writable {
+            if let Err(e) = self.store.save(&self.prefs) {
+                self.enqueue(Action::Error(format!("saving preferences: {e}")));
+            }
+        }
+        self.enqueue(Action::PreferencesChanged(self.prefs.clone()));
     }
 
     /// Reload the diff of the currently selected file, if it still exists in
@@ -613,6 +658,168 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
+    use crate::prefs::{FileStore, LayoutPrefs, MemoryStore};
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    /// Minimal backend so `App` can be constructed without a repo.
+    struct FakeGit;
+
+    impl GitBackend for FakeGit {
+        fn status(&self) -> Result<Vec<FileChange>> {
+            Ok(vec![])
+        }
+        fn diff(&self, _file: &FileChange) -> Result<DiffDoc> {
+            Ok(DiffDoc {
+                path: String::new(),
+                rows: vec![],
+                binary: false,
+            })
+        }
+        fn stage(&self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+        fn unstage(&self, _path: &str) -> Result<()> {
+            Ok(())
+        }
+        fn discard(&self, _file: &FileChange) -> Result<()> {
+            Ok(())
+        }
+        fn stage_all(&self) -> Result<()> {
+            Ok(())
+        }
+        fn unstage_all(&self) -> Result<()> {
+            Ok(())
+        }
+        fn commit(&self, _message: &str) -> Result<()> {
+            Ok(())
+        }
+        fn branch(&self) -> Result<String> {
+            Ok("main".to_string())
+        }
+        fn head(&self) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn log(&self, _skip: usize, _limit: usize) -> Result<Vec<Commit>> {
+            Ok(vec![])
+        }
+        fn commit_files(&self, _hash: &str) -> Result<Vec<CommitFile>> {
+            Ok(vec![])
+        }
+        fn commit_diff(&self, _hash: &str, _file: &CommitFile) -> Result<DiffDoc> {
+            self.diff(&FileChange {
+                path: String::new(),
+                orig_path: None,
+                section: Section::Unstaged,
+                code: 'M',
+            })
+        }
+    }
+
+    fn app(store: MemoryStore) -> App {
+        App::new(Box::new(FakeGit), Box::new(store))
+    }
+
+    fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    #[test]
+    fn prefs_loaded_applies_sidebar_width() {
+        let store = MemoryStore::new(Some(Preferences {
+            layout: LayoutPrefs {
+                sidebar_width: Some(50),
+                ..Default::default()
+            },
+        }));
+        let app = app(store);
+        assert_eq!(app.sidebar.width_for(200), 50);
+    }
+
+    #[test]
+    fn resize_key_persists_width() {
+        let store = MemoryStore::new(Some(Preferences {
+            layout: LayoutPrefs {
+                sidebar_width: Some(50),
+                ..Default::default()
+            },
+        }));
+        let mut app = app(store.clone());
+        app.main_area = Rect::new(0, 0, 200, 30);
+        app.dispatch(); // flush the startup queue
+        app.on_key(KeyEvent::from(KeyCode::Char(']')));
+        app.dispatch();
+        app.sync_prefs();
+        assert_eq!(
+            store.saved().unwrap().layout.sidebar_width,
+            Some(54),
+            "] on width 50 must persist 54"
+        );
+    }
+
+    #[test]
+    fn drags_save_once_on_release() {
+        let store = MemoryStore::new(None);
+        let mut app = app(store.clone());
+        app.main_area = Rect::new(0, 0, 200, 30);
+        // Press on the divider (default width 35% of 200 = 70 -> cols 69/70).
+        assert!(app.sidebar.on_mouse(
+            &mouse(MouseEventKind::Down(MouseButton::Left), 69, 5),
+            app.main_area
+        ));
+        app.sync_prefs();
+        assert_eq!(store.save_count(), 0, "nothing saved mid-press");
+        assert!(app.sidebar.on_mouse(
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 90, 5),
+            app.main_area
+        ));
+        app.sync_prefs();
+        assert_eq!(store.save_count(), 0, "nothing saved mid-drag");
+        assert!(app.sidebar.on_mouse(
+            &mouse(MouseEventKind::Up(MouseButton::Left), 90, 5),
+            app.main_area
+        ));
+        app.sync_prefs();
+        assert_eq!(store.save_count(), 1, "one save after release");
+        assert_eq!(store.saved().unwrap().layout.sidebar_width, Some(91));
+    }
+
+    #[test]
+    fn failed_load_never_saves() {
+        let store = MemoryStore::failing_load("corrupt prefs");
+        let mut app = app(store.clone());
+        app.main_area = Rect::new(0, 0, 200, 30);
+        app.dispatch();
+        assert!(
+            matches!(&app.message, Some((m, true)) if m.contains("preferences")),
+            "load error should surface in the status bar: {:?}",
+            app.message
+        );
+        app.on_key(KeyEvent::from(KeyCode::Char(']')));
+        app.dispatch();
+        app.sync_prefs();
+        assert_eq!(store.save_count(), 0);
+    }
+
+    #[test]
+    fn invalid_prefs_file_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preferences.toml");
+        std::fs::write(&path, "[[[bad").unwrap();
+        let mut app = App::new(Box::new(FakeGit), Box::new(FileStore::new(path.clone())));
+        app.main_area = Rect::new(0, 0, 200, 30);
+        app.dispatch();
+        app.on_key(KeyEvent::from(KeyCode::Char(']')));
+        app.dispatch();
+        app.sync_prefs();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[[[bad");
+    }
 
     #[test]
     fn tick_refresh_is_deferred_during_input() {

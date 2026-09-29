@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use terminal_ide::app::App;
 use terminal_ide::git::cli::{resolve_toplevel, CliGit};
+use terminal_ide::prefs::{FileStore, MemoryStore, PrefsStore};
 
 fn main() -> Result<()> {
     let arg = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
@@ -15,7 +16,13 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
 
-    let mut app = App::new(Box::new(CliGit::new(root)));
+    // No home directory (nothing to derive a config path from) -> prefs are
+    // in-memory only for this session.
+    let store: Box<dyn PrefsStore> = match FileStore::default_path() {
+        Some(path) => Box::new(FileStore::new(path)),
+        None => Box::new(MemoryStore::new(None)),
+    };
+    let mut app = App::new(Box::new(CliGit::new(root)), store);
     let result = app.run(&mut terminal);
 
     let _ = execute!(stdout(), DisableMouseCapture);

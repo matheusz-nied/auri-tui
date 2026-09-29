@@ -197,6 +197,23 @@ impl Sidebar {
     pub fn divider_active(&self) -> bool {
         self.hover_divider || self.dragging || self.hover_split || self.dragging_split
     }
+
+    /// Persisted form of the sidebar geometry (raw values — clamping happens
+    /// at render time, so these are exactly what the user last set).
+    pub fn to_prefs(&self) -> crate::prefs::LayoutPrefs {
+        crate::prefs::LayoutPrefs {
+            sidebar_width: self.width,
+            sidebar_visible: self.visible,
+            history_height: self.history_height,
+        }
+    }
+
+    /// Restore geometry loaded from disk.
+    pub fn apply_prefs(&mut self, p: &crate::prefs::LayoutPrefs) {
+        self.width = p.sidebar_width;
+        self.visible = p.sidebar_visible;
+        self.history_height = p.history_height;
+    }
 }
 
 /// Screen rects for the panels plus divider hit zones: the vertical
@@ -425,5 +442,24 @@ mod tests {
         assert!(s.divider_active());
         assert!(!s.on_mouse(&mouse(MouseEventKind::Moved, 10, 5), main));
         assert!(!s.divider_active());
+    }
+
+    #[test]
+    fn prefs_round_trip() {
+        let mut s = visible();
+        s.width = Some(44);
+        s.visible = false;
+        s.history_height = Some(7);
+        let p = s.to_prefs();
+        assert_eq!(p.sidebar_width, Some(44));
+        assert!(!p.sidebar_visible);
+        assert_eq!(p.history_height, Some(7));
+        let mut s2 = visible();
+        s2.apply_prefs(&p);
+        assert_eq!(s2.to_prefs(), p);
+        // Defaults apply cleanly to a fresh sidebar.
+        let mut s3 = visible();
+        s3.apply_prefs(&crate::prefs::LayoutPrefs::default());
+        assert_eq!(s3.width_for(100), 35);
     }
 }

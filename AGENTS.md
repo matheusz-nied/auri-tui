@@ -22,6 +22,8 @@ components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                hitbox.rs, confirm_dialog.rs (modal overlay example)
 layout.rs      sidebar geometry: width/clamps/divider+split drag — pure,
                unit-tested
+prefs/         persisted user preferences: `Preferences` (TOML document),
+               `PrefsStore` trait, `FileStore` (atomic save) + `MemoryStore`
 ```
 
 Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
@@ -61,6 +63,24 @@ horizontal split row = changes/history heights) before they reach
 components — App calls it before panel routing. `b` toggles the sidebar,
 `[`/`]` resize it; `c`/`1`/`3` re-show it while focusing CommitInput/
 Changes/History; `2` focuses the diff.
+
+### Preferences — `prefs/mod.rs`
+
+`Preferences` persists to `$TIDE_CONFIG_DIR/preferences.toml` when
+`TIDE_CONFIG_DIR` is set (test/override hook), else
+`$XDG_CONFIG_HOME/tide/preferences.toml`, else
+`~/.config/tide/preferences.toml` (that path on macOS too — no `dirs`
+crate). Saves are atomic (tmp file + rename). A missing file loads defaults;
+an *unparseable* file disables saving for the session and shows an error —
+it is never overwritten.
+
+**App is the only writer.** To add a preference: add a field or a new
+`#[serde(default)]` section to `Preferences`; read it in your component's
+`update(Action::PreferencesChanged)`; to change it, add an `Action` handled
+in `App` that mutates `self.prefs` then calls the save path (`sync_prefs`).
+Unknown keys in the file are ignored, so forward/backward compatibility is
+free. Tests must never touch the real config dir — use `MemoryStore` or a
+`FileStore` pointed at a tempdir.
 
 ### Adding a new panel
 
