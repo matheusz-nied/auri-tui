@@ -2,21 +2,29 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::Frame;
 
 use crate::action::Action;
 use crate::component::Component;
 
 use super::border_style;
-use super::hitbox::{button_span, Hitboxes};
+use super::hitbox::Hitboxes;
 
-/// Single-line commit message box plus a centered "✓ Commit" button on the
-/// last row. When focused, printable characters edit the message; Enter emits
-/// `Action::Commit`, Esc returns focus via `FocusNext`. The row's rightmost
-/// button runs AI generation (`CommitMessageGenerating` shows progress).
+/// AI button background (idle / generating).
+const AI_BG: Color = Color::Rgb(110, 60, 170);
+const AI_STOP_BG: Color = Color::Rgb(160, 50, 70);
+/// Text columns to keep before the AI button shrinks to just its glyph.
+const MIN_TEXT_W: u16 = 16;
+
+/// Single-line commit message box with an AI button (`✦ AI`) inside on the right,
+/// plus a full-width "✓ Commit" button on the last row that is only enabled
+/// (and clickable) while the message has non-whitespace text. When focused,
+/// printable characters edit the message; Enter emits `Action::Commit`, Esc
+/// returns focus via `FocusNext`. `CommitMessageGenerating` shows progress
+/// and turns the AI button into `■ Stop` (cancel).
 #[derive(Default)]
 pub struct CommitInput {
     message: Vec<char>,
@@ -31,6 +39,10 @@ pub struct CommitInput {
 impl CommitInput {
     fn message_text(&self) -> String {
         self.message.iter().collect()
+    }
+
+    fn can_commit(&self) -> bool {
+        self.message.iter().any(|c| !c.is_whitespace())
     }
 }
 
@@ -58,11 +70,8 @@ impl Component for CommitInput {
             KeyCode::Right => self.cursor = (self.cursor + 1).min(self.message.len()),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.message.len(),
-            KeyCode::Enter => {
-                let msg = self.message_text();
-                if !msg.trim().is_empty() {
-                    return Some(Action::Commit(msg));
-                }
+            KeyCode::Enter if self.can_commit() => {
+                return Some(Action::Commit(self.message_text()))
             }
             _ => {}
         }
@@ -71,16 +80,7 @@ impl Component for CommitInput {
 
     fn handle_mouse(&mut self, ev: MouseEvent, _area: Rect) -> Option<Action> {
         if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
-            match self.hitboxes.hit(ev.column, ev.row) {
-                Some(Action::Commit(msg)) => {
-                    if msg.trim().is_empty() {
-                        return Some(Action::Error("Type a commit message".to_string()));
-                    }
-                    return Some(Action::Commit(msg));
-                }
-                Some(action) => return Some(action),
-                None => {}
-            }
+            return self.hitboxes.hit(ev.column, ev.row);
         }
         None
     }
@@ -112,51 +112,78 @@ impl Component for CommitInput {
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         self.hitboxes.clear();
-        // Last row is the button bar; the rest is the bordered input box.
+        // Last row is the commit button; the rest is the rounded input box.
         let input = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
         let button_row = Rect::new(area.x, area.y + input.height, area.width, 1);
 
-        let title = match &self.generating {
-            Some(provider) => format!("Message (generating with {provider}…)"),
-            None => "Message (Enter to commit)".to_string(),
-        };
         let block = Block::bordered()
-            .title(title)
+            .border_type(BorderType::Rounded)
             .border_style(border_style(focused));
         let inner = block.inner(input);
         f.render_widget(block, input);
 
-        let text = self.message_text();
-        let line = if text.is_empty() {
-            let placeholder = if self.generating.is_some() {
-                "Generating… (Esc to cancel)".to_string()
-            } else if self.branch.is_empty() {
-                "Commit message".to_string()
-            } else {
-                format!("Commit on '{}'", self.branch)
+        // The AI button sits inside the box on the right as a filled pill
+        // (`✦ AI`, `■ Stop` while generating; just the glyph when narrow);
+        // the text gets the rest minus a one-column gap, scrolled so the
+        // cursor stays visible.
+        let (glyph, word, action, bg) = if self.generating.is_some() {
+            ("■", "Stop", Action::CancelCommitMessage, AI_STOP_BG)
+        } else {
+            ("✦", "AI", Action::GenerateCommitMessage, AI_BG)
+        };
+        let full = format!(" {glyph} {word} ");
+        let full_w = full.chars().count() as u16;
+        let label = if inner.width > full_w + MIN_TEXT_W {
+            full
+        } else {
+            format!(" {glyph} ")
+        };
+        let ai_w = (label.chars().count() as u16).min(inner.width);
+        let ai_rect = Rect::new(
+            inner.x + inner.width - ai_w,
+            inner.y,
+            ai_w,
+            inner.height.min(1),
+        );
+        let text_w = inner.width.saturating_sub(ai_w + 1);
+        let text_rect = Rect::new(inner.x, inner.y, text_w, inner.height.min(1));
+
+        let scroll = (self.cursor + 1).saturating_sub(text_w as usize);
+        let line = if self.message.is_empty() {
+            let placeholder = match (&self.generating, self.branch.is_empty()) {
+                (Some(provider), _) => format!("Generating with {provider}… (Esc to cancel)"),
+                (None, true) => "Message (Enter to commit)".to_string(),
+                (None, false) => format!("Message (Enter to commit on \"{}\")", self.branch),
             };
             Line::from(Span::styled(
                 placeholder,
                 Style::default().fg(Color::DarkGray),
             ))
         } else {
-            Line::from(text)
+            Line::from(self.message[scroll..].iter().collect::<String>())
         };
-        f.render_widget(Paragraph::new(line), inner);
+        f.render_widget(Paragraph::new(line), text_rect);
 
-        // "✓ Commit" bar with the AI button on its rightmost 3 columns;
-        // dimmer while the message is empty.
-        let ai_w = 3.min(button_row.width);
-        let commit_row = Rect::new(button_row.x, button_row.y, button_row.width - ai_w, 1);
-        let ai_row = Rect::new(button_row.x + commit_row.width, button_row.y, ai_w, 1);
+        let style = Style::default()
+            .fg(Color::White)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(Span::styled(label, style), ai_rect);
+        self.hitboxes.push(ai_rect, action);
+
+        // Full-width "✓ Commit" button; disabled (dim, not clickable) until
+        // there is a message.
+        let enabled = self.can_commit();
         let label = "✓ Commit";
         let label_w = label.chars().count() as u16;
-        let left = commit_row.width.saturating_sub(label_w) / 2;
-        let right = commit_row.width.saturating_sub(left + label_w);
-        let bg = if self.message.is_empty() {
-            Color::Rgb(40, 60, 80)
+        let left = button_row.width.saturating_sub(label_w) / 2;
+        let right = button_row.width.saturating_sub(left + label_w);
+        let style = if enabled {
+            Style::default().fg(Color::White).bg(Color::Rgb(0, 95, 160))
         } else {
-            Color::Rgb(0, 95, 160)
+            Style::default()
+                .fg(Color::Rgb(110, 120, 130))
+                .bg(Color::Rgb(40, 48, 58))
         };
         let bar = format!(
             "{}{}{}",
@@ -164,37 +191,14 @@ impl Component for CommitInput {
             label,
             " ".repeat(right as usize)
         );
-        f.render_widget(
-            Span::styled(bar, Style::default().fg(Color::White).bg(bg)),
-            commit_row,
-        );
-        self.hitboxes
-            .push(commit_row, Action::Commit(self.message_text()));
+        f.render_widget(Span::styled(bar, style), button_row);
+        if enabled {
+            self.hitboxes
+                .push(button_row, Action::Commit(self.message_text()));
+        }
 
-        // AI button: ✦ starts a generation, ■ cancels the running one.
-        let (glyph, action, style) = if self.generating.is_some() {
-            (
-                "■",
-                Action::CancelCommitMessage,
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Rgb(140, 40, 60)),
-            )
-        } else {
-            (
-                "✦",
-                Action::GenerateCommitMessage,
-                Style::default().fg(Color::Magenta).bg(bg),
-            )
-        };
-        f.render_widget(button_span(glyph, style), ai_row);
-        self.hitboxes.push(ai_row, action);
-
-        if focused {
-            let x = inner.x + self.cursor as u16;
-            if x < inner.x + inner.width {
-                f.set_cursor_position((x, inner.y));
-            }
+        if focused && text_w > 0 {
+            f.set_cursor_position((text_rect.x + (self.cursor - scroll) as u16, text_rect.y));
         }
     }
 }
@@ -209,56 +213,108 @@ mod tests {
         Rect::new(0, 0, 60, 4)
     }
 
-    fn click(col: u16) -> MouseEvent {
+    fn click(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: col,
-            row: 3,
-            modifiers: ratatui::crossterm::event::KeyModifiers::empty(),
+            row,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    fn draw(c: &mut CommitInput) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
+        term.draw(|f| c.render(f, area(), true)).unwrap();
+        term
+    }
+
+    fn type_str(c: &mut CommitInput, s: &str) {
+        for ch in s.chars() {
+            c.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()));
         }
     }
 
     #[test]
-    fn commit_button_is_a_bar_and_ai_button_takes_last_3_cols() {
+    fn ai_button_is_a_filled_pill_inside_the_input_box() {
         let mut c = CommitInput::default();
-        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
-        term.draw(|f| c.render(f, area(), true)).unwrap();
+        let term = draw(&mut c);
         let buf = term.backend().buffer();
-        // Empty message -> dimmed bar across all but the AI button's 3 cols.
-        for x in 0..57 {
-            assert_eq!(buf[(x, 3)].bg, Color::Rgb(40, 60, 80), "col {x}");
+        // Inner row is y=1, cols 1..=58; " ✦ AI " fills its last 6 cols.
+        assert_eq!(buf[(54, 1)].symbol(), "✦");
+        assert_eq!(buf[(56, 1)].symbol(), "A");
+        for col in 53..=58 {
+            assert_eq!(buf[(col, 1)].bg, AI_BG, "col {col}");
+            assert!(matches!(
+                c.handle_mouse(click(col, 1), area()),
+                Some(Action::GenerateCommitMessage)
+            ));
         }
-        // Clicking the far left/right of the bar still hits the commit button.
+        assert!(c.handle_mouse(click(52, 1), area()).is_none());
+    }
+
+    #[test]
+    fn narrow_box_shrinks_ai_button_to_its_glyph() {
+        let mut c = CommitInput::default();
+        let narrow = Rect::new(0, 0, 20, 4);
+        let mut term = Terminal::new(TestBackend::new(20, 4)).unwrap();
+        term.draw(|f| c.render(f, narrow, true)).unwrap();
+        let buf = term.backend().buffer();
+        // Inner cols 1..=18; " ✦ " takes 16..=18, still filled.
+        assert_eq!(buf[(17, 1)].symbol(), "✦");
+        assert_eq!(buf[(16, 1)].bg, AI_BG);
+        assert!(c.handle_mouse(click(15, 1), narrow).is_none());
         assert!(matches!(
-            c.handle_mouse(click(0), area()),
-            Some(Action::Error(_))
-        ));
-        assert!(matches!(
-            c.handle_mouse(click(56), area()),
-            Some(Action::Error(_))
-        ));
-        // The rightmost 3 columns are the AI generate button.
-        assert!(matches!(
-            c.handle_mouse(click(59), area()),
+            c.handle_mouse(click(16, 1), narrow),
             Some(Action::GenerateCommitMessage)
         ));
     }
 
     #[test]
-    fn commit_button_click_with_message_commits() {
+    fn commit_button_is_disabled_without_a_message() {
         let mut c = CommitInput::default();
-        c.handle_key(KeyEvent::new(
-            KeyCode::Char('x'),
-            ratatui::crossterm::event::KeyModifiers::empty(),
-        ));
-        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
-        term.draw(|f| c.render(f, area(), true)).unwrap();
+        type_str(&mut c, "  ");
+        let term = draw(&mut c);
         let buf = term.backend().buffer();
-        assert_eq!(buf[(0, 3)].bg, Color::Rgb(0, 95, 160));
-        assert!(matches!(
-            c.handle_mouse(click(56), area()),
-            Some(Action::Commit(m)) if m == "x"
-        ));
+        for x in 0..60 {
+            assert_eq!(buf[(x, 3)].bg, Color::Rgb(40, 48, 58), "col {x}");
+        }
+        assert!(c.handle_mouse(click(0, 3), area()).is_none());
+        assert!(c.handle_mouse(click(59, 3), area()).is_none());
+        assert!(c
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .is_none());
+    }
+
+    #[test]
+    fn commit_button_spans_the_row_and_commits_with_a_message() {
+        let mut c = CommitInput::default();
+        type_str(&mut c, "x");
+        let term = draw(&mut c);
+        let buf = term.backend().buffer();
+        for x in 0..60 {
+            assert_eq!(buf[(x, 3)].bg, Color::Rgb(0, 95, 160), "col {x}");
+        }
+        for col in [0, 59] {
+            assert!(matches!(
+                c.handle_mouse(click(col, 3), area()),
+                Some(Action::Commit(m)) if m == "x"
+            ));
+        }
+    }
+
+    #[test]
+    fn long_message_scrolls_and_never_overlaps_the_ai_button() {
+        let mut c = CommitInput::default();
+        type_str(&mut c, &"a".repeat(80));
+        let term = draw(&mut c);
+        let buf = term.backend().buffer();
+        // Text width = 58 - 6 - 1 gap = 51 (cols 1..=51); the end cursor
+        // takes col 51, the gap (52) and button (53..) stay clear.
+        assert_eq!(buf[(1, 1)].symbol(), "a");
+        assert_eq!(buf[(50, 1)].symbol(), "a");
+        assert_eq!(buf[(51, 1)].symbol(), " ");
+        assert_eq!(buf[(52, 1)].symbol(), " ");
+        assert_eq!(buf[(54, 1)].symbol(), "✦");
     }
 
     #[test]
@@ -267,16 +323,18 @@ mod tests {
         c.update(&Action::CommitMessageGenerating {
             provider: "codex (gpt-6-luna)".to_string(),
         });
-        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
-        term.draw(|f| c.render(f, area(), true)).unwrap();
+        let term = draw(&mut c);
+        // " ■ Stop " takes the last 8 inner cols (51..=58).
+        let buf = term.backend().buffer();
+        assert_eq!(buf[(52, 1)].symbol(), "■");
+        assert_eq!(buf[(51, 1)].bg, AI_STOP_BG);
         assert!(matches!(
-            c.handle_mouse(click(59), area()),
+            c.handle_mouse(click(51, 1), area()),
             Some(Action::CancelCommitMessage)
         ));
-        // Failure clears the busy state; success fills the message.
+        // Success fills the message; failure clears the busy state.
         c.update(&Action::CommitMessageGenerated("feat: x".to_string()));
-        let mut term = Terminal::new(TestBackend::new(60, 4)).unwrap();
-        term.draw(|f| c.render(f, area(), true)).unwrap();
+        draw(&mut c);
         assert_eq!(c.message_text(), "feat: x");
         c.update(&Action::CommitMessageFailed);
         assert!(c.generating.is_none());
@@ -285,10 +343,7 @@ mod tests {
     #[test]
     fn ctrl_char_is_not_inserted_as_text() {
         let mut c = CommitInput::default();
-        c.handle_key(KeyEvent::new(
-            KeyCode::Char('g'),
-            ratatui::crossterm::event::KeyModifiers::CONTROL,
-        ));
+        c.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert_eq!(c.message_text(), "");
     }
 }
