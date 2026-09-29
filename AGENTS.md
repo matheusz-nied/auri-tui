@@ -1,18 +1,19 @@
 # terminal-ide (`tide`)
 
 A terminal IDE written in Rust with [ratatui]. Currently ships a VS Code–style
-git panel: a changes list (staged/unstaged), a side-by-side diff viewer, and a
-commit message input.
+git panel (a changes list, a side-by-side diff viewer, a commit message input
+and history) and a file explorer with a read-only file viewer.
 
 ## Architecture
 
-Layered and decoupled — the golden rule is **components never call git**:
+Layered and decoupled — the golden rule is **components never call git**
+(nor do any other I/O, filesystem included):
 
 ```
 main.rs        terminal init/restore (+ panic hook), CLI arg = repo path
 app.rs         App: owns components, focus, last-frame rects, the action queue.
-               The ONLY place GitBackend is called; results are broadcast back
-               as actions.
+               The ONLY place GitBackend/FsBackend are called; results are
+               broadcast back as actions.
 event.rs       crossterm polling (~250 ms) + a ~2 s Tick that drives Refresh
 action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
@@ -22,10 +23,14 @@ ai/            AI commit-message generation: pure prompt/cleanup helpers +
                `AiRunner` trait; `ProcessRunner` spawns the CLI (codex or
                opencode) on background threads — the app's one async side
                effect, polled by App once per loop
+fs/            workspace reads: model types + FsBackend trait; `local` is
+               the real impl (paths validated, root-relative), `tree` the
+               pure expand/collapse model the explorer flattens
 components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
-               hitbox.rs, confirm_dialog.rs (modal overlay example)
-layout.rs      sidebar geometry: width/clamps/divider+split drag — pure,
-               unit-tested
+               file_tree.rs, file_view.rs, hitbox.rs, confirm_dialog.rs
+               (modal overlay example)
+layout.rs      sidebar geometry: view (Explorer/Source Control), width/
+               clamps/divider+split drag — pure, unit-tested
 prefs/         persisted user preferences: `Preferences` (TOML document),
                `PrefsStore` trait, `FileStore` (atomic save) + `MemoryStore`
 ```
@@ -33,10 +38,11 @@ prefs/         persisted user preferences: `Preferences` (TOML document),
 Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
 `ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`,
-`LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`) are executed
-by `App` via `Box<dyn GitBackend>` → results (`StatusLoaded`, `DiffLoaded`,
-`HistoryLoaded`, `CommitFilesLoaded`, `Error`) are broadcast to every
-component's `update`.
+`LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`, `LoadDirs`,
+`OpenFile`) are executed by `App` via `Box<dyn GitBackend>` /
+`Box<dyn FsBackend>` → results (`StatusLoaded`, `DiffLoaded`,
+`HistoryLoaded`, `CommitFilesLoaded`, `DirLoaded`, `FileLoaded`,
+`FileReloaded`, `Error`) are broadcast to every component's `update`.
 
 The diff pane's contents are described by `git::DiffSource`:
 `Working(FileChange)` is reloaded on status ticks and cleared when the file
@@ -45,6 +51,25 @@ cleared. `Changes`/`History` each carry an `active` flag so only the list
 that owns the diff draws a strong selection; a status tick while a commit
 diff is open never steals it back. `History` refetches only when `head()`
 moves.
+
+### Main pane and explorer
+
+The main pane follows the sidebar view (`main_panel()`): Source Control
+shows `DiffView` (`App::diff: Option<DiffSource>`, set by `SelectFile`/
+`SelectCommitFile`), Explorer shows `FileView` (`App::file: Option<OpenFile>`,
+set by a successful `OpenFile`). Both slots are kept, so switching views
+flips between the last diff and the last file; only the visible panel gets
+a rect and focus (`panel_visible()`), and focus on the main pane stays on
+the main pane across a switch (`set_view`). `FileTree` tracks the `open`
+path (re-clicking it is a no-op). Listings are lazy — expanding a dir
+emits `LoadDirs([dir])`, and every `Refresh` makes the tree emit `LoadDirs`
+for all visible dirs (root included, which is how the first listing
+arrives). On `Refresh` `App` re-reads the open file only when
+`fs.stamp()` changed; a deleted file keeps its last contents. Files over
+`fs::MAX_FILE_BYTES` are truncated; binaries (NUL in the first 8 KB) are
+not shown; tabs are expanded and control chars replaced at load. Tree rows
+get git decorations from `StatusLoaded` (`file_tree::decorations`). Tests
+fake the filesystem with `FakeFs` in `app.rs`.
 
 AI commit messages: Ctrl-G (any panel, when no overlay captures input) or
 the ✦ button in the commit box runs `GenerateCommitMessage` — `App` gathers
@@ -71,14 +96,21 @@ there.
 
 ### Sidebar layout — `layout.rs`
 
-The left column (commit input + changes + commit history) is a resizable,
-collapsible sidebar. `Sidebar` owns width/visibility/drag state plus the
-changes/history split; `compute()` returns the panel rects each frame.
-`Sidebar::on_mouse` consumes divider presses/drags (vertical = sidebar width,
-horizontal split row = changes/history heights) before they reach
-components — App calls it before panel routing. `b` toggles the sidebar,
-`[`/`]` resize it; `c`/`1`/`3` re-show it while focusing CommitInput/
-Changes/History; `2` focuses the diff.
+The left column is a resizable, collapsible sidebar with two views
+(`SidebarView`, persisted as `layout.sidebar_view`): Explorer (the file
+tree) or Source Control (commit input + changes + commit history).
+`Sidebar` owns width/visibility/view/drag state plus the changes/history
+split; `compute()` returns the panel rects each frame.
+The sidebar's top row is a clickable Explorer | Source Control tab bar
+(`components/view_tabs.rs`, drawn by `App` with its own `tab_hits`
+hitboxes → `Action::SetSidebarView`; labels shorten to Files | Git when
+narrow). `Sidebar::on_mouse` consumes divider presses/drags (vertical =
+sidebar width, horizontal split row = changes/history heights) before they
+reach components — App calls it before the tab bar and panel routing.
+`b` toggles the sidebar,
+`[`/`]` resize it; `e` shows the Explorer view, `c`/`1`/`3` the Source
+Control view while focusing CommitInput/Changes/History; `2` focuses the
+main pane (diff or file).
 
 ### Preferences — `prefs/mod.rs`
 

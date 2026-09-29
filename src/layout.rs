@@ -1,5 +1,6 @@
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 
 /// Narrowest the sidebar can get while visible.
 pub const MIN_SIDEBAR: u16 = 20;
@@ -7,6 +8,8 @@ pub const MIN_SIDEBAR: u16 = 20;
 pub const MIN_MAIN: u16 = 30;
 /// Columns added/removed per `grow`/`shrink` key press.
 pub const RESIZE_STEP: u16 = 4;
+/// Height of the Explorer/Source Control tab bar atop the sidebar.
+const TABS_HEIGHT: u16 = 1;
 /// Commit input height inside the sidebar.
 const COMMIT_HEIGHT: u16 = 4;
 /// Minimum height for the changes and history panels.
@@ -14,8 +17,18 @@ const MIN_PANEL: u16 = 4;
 /// Default share of the space below the commit box that history gets.
 const HISTORY_SHARE: u16 = 45;
 
-/// Sidebar (commit input + changes list + commit history) layout state:
-/// width, visibility, divider drag/hover and the changes/history split.
+/// What the sidebar shows, like VS Code's activity bar: the file tree or
+/// the git panels (commit input + changes + history).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarView {
+    Explorer,
+    #[default]
+    SourceControl,
+}
+
+/// Sidebar layout state: width, visibility, the active view, divider
+/// drag/hover and the changes/history split (Source Control view).
 /// Pure value type — `App` owns one and re-renders every frame, so all
 /// mutation happens through these methods.
 #[derive(Debug)]
@@ -26,6 +39,7 @@ pub struct Sidebar {
     /// commit input box.
     history_height: Option<u16>,
     pub visible: bool,
+    pub view: SidebarView,
     dragging: bool,
     /// Dragging the horizontal divider between Changes and Commits.
     dragging_split: bool,
@@ -39,6 +53,7 @@ impl Default for Sidebar {
             width: None,
             history_height: None,
             visible: true,
+            view: SidebarView::SourceControl,
             dragging: false,
             dragging_split: false,
             hover_divider: false,
@@ -115,13 +130,15 @@ impl Sidebar {
     }
 
     /// The history panel's top border row — the horizontal drag target.
+    /// Only the Source Control view has one.
     fn split_row(&self, main: Rect) -> Option<u16> {
         let w = self.width_for(main.width);
-        if w == 0 || main.height <= COMMIT_HEIGHT {
+        let body = body(main);
+        if w == 0 || body.height <= COMMIT_HEIGHT || self.view != SidebarView::SourceControl {
             return None;
         }
-        let below = main.height - COMMIT_HEIGHT;
-        Some(main.y + COMMIT_HEIGHT + self.split_heights(below).0)
+        let below = body.height - COMMIT_HEIGHT;
+        Some(body.y + COMMIT_HEIGHT + self.split_heights(below).0)
     }
 
     /// Whether the cursor is on the changes/history divider row, inside the
@@ -170,8 +187,9 @@ impl Sidebar {
                 true
             }
             K::Drag(MouseButton::Left) if self.dragging_split => {
-                let below = main.height.saturating_sub(COMMIT_HEIGHT.min(main.height));
-                let h = (main.y + main.height).saturating_sub(ev.row);
+                let body = body(main);
+                let below = body.height.saturating_sub(COMMIT_HEIGHT.min(body.height));
+                let h = (body.y + body.height).saturating_sub(ev.row);
                 self.history_height = Some(self.clamp_history(h, below));
                 true
             }
@@ -205,6 +223,7 @@ impl Sidebar {
             sidebar_width: self.width,
             sidebar_visible: self.visible,
             history_height: self.history_height,
+            sidebar_view: self.view,
         }
     }
 
@@ -213,16 +232,28 @@ impl Sidebar {
         self.width = p.sidebar_width;
         self.visible = p.sidebar_visible;
         self.history_height = p.history_height;
+        self.view = p.sidebar_view;
     }
 }
 
+/// The sidebar rows below the tab bar (full `main` width — callers cut
+/// the sidebar's columns themselves).
+fn body(main: Rect) -> Rect {
+    let t = TABS_HEIGHT.min(main.height);
+    Rect::new(main.x, main.y + t, main.width, main.height - t)
+}
+
 /// Screen rects for the panels plus divider hit zones: the vertical
-/// `(sidebar right border, diff left border)` columns and the changes/
-/// history split row.
+/// `(sidebar right border, main pane left border)` columns and the changes/
+/// history split row. Only the active sidebar view's panels get rects.
 pub struct PanelRects {
+    /// The Explorer/Source Control tab bar (sidebar's top row).
+    pub tabs: Option<Rect>,
     pub commit: Option<Rect>,
     pub changes: Option<Rect>,
     pub history: Option<Rect>,
+    pub explorer: Option<Rect>,
+    /// The main pane (diff or file viewer).
     pub diff: Rect,
     pub divider: Option<(u16, u16)>,
     /// Row of the history panel's top border (the horizontal drag target).
@@ -234,9 +265,11 @@ pub fn compute(main: Rect, sidebar: &Sidebar) -> PanelRects {
     let w = sidebar.width_for(main.width);
     if w == 0 {
         return PanelRects {
+            tabs: None,
             commit: None,
             changes: None,
             history: None,
+            explorer: None,
             diff: main,
             divider: None,
             split_row: None,
@@ -244,19 +277,36 @@ pub fn compute(main: Rect, sidebar: &Sidebar) -> PanelRects {
     }
     // Keep at least one column for the diff pane.
     let w = w.min(main.width.saturating_sub(1).max(1));
-    let commit_h = main.height.min(COMMIT_HEIGHT);
-    let below = main.height - commit_h;
-    let (changes_h, history_h) = sidebar.split_heights(below);
-    let commit = Rect::new(main.x, main.y, w, commit_h);
-    let changes = Rect::new(main.x, main.y + commit_h, w, changes_h);
-    let history = Rect::new(main.x, changes.y + changes_h, w, history_h);
     let diff = Rect::new(main.x + w, main.y, main.width - w, main.height);
+    let divider = Some((main.x + w - 1, main.x + w));
+    let body = body(main);
+    let tabs = Some(Rect::new(main.x, main.y, w, main.height - body.height));
+    if sidebar.view == SidebarView::Explorer {
+        return PanelRects {
+            tabs,
+            commit: None,
+            changes: None,
+            history: None,
+            explorer: Some(Rect::new(body.x, body.y, w, body.height)),
+            diff,
+            divider,
+            split_row: None,
+        };
+    }
+    let commit_h = body.height.min(COMMIT_HEIGHT);
+    let below = body.height - commit_h;
+    let (changes_h, history_h) = sidebar.split_heights(below);
+    let commit = Rect::new(body.x, body.y, w, commit_h);
+    let changes = Rect::new(body.x, body.y + commit_h, w, changes_h);
+    let history = Rect::new(body.x, changes.y + changes_h, w, history_h);
     PanelRects {
+        tabs,
         commit: Some(commit),
         changes: Some(changes),
         history: Some(history),
+        explorer: None,
         diff,
-        divider: Some((main.x + w - 1, main.x + w)),
+        divider,
         split_row: Some(history.y),
     }
 }
@@ -328,9 +378,11 @@ mod tests {
         assert_eq!(s.width_for(100), 0);
         let pr = compute(main, &s);
         assert!(
-            pr.commit.is_none()
+            pr.tabs.is_none()
+                && pr.commit.is_none()
                 && pr.changes.is_none()
                 && pr.history.is_none()
+                && pr.explorer.is_none()
                 && pr.divider.is_none()
                 && pr.split_row.is_none()
         );
@@ -340,28 +392,48 @@ mod tests {
     #[test]
     fn compute_splits_sidebar_into_three_panels() {
         let s = visible();
+        let main = Rect::new(0, 0, 100, 25);
+        let pr = compute(main, &s);
+        // Tab bar, then 20 rows below the commit box: history gets 45% = 9.
+        assert_eq!(pr.tabs, Some(Rect::new(0, 0, 35, 1)));
+        assert_eq!(pr.commit, Some(Rect::new(0, 1, 35, 4)));
+        assert_eq!(pr.changes, Some(Rect::new(0, 5, 35, 11)));
+        assert_eq!(pr.history, Some(Rect::new(0, 16, 35, 9)));
+        assert_eq!(pr.diff, Rect::new(35, 0, 65, 25));
+        assert_eq!(pr.divider, Some((34, 35)));
+        assert_eq!(pr.split_row, Some(16));
+    }
+
+    #[test]
+    fn explorer_view_gives_the_tree_the_whole_sidebar() {
+        let mut s = visible();
+        s.view = SidebarView::Explorer;
         let main = Rect::new(0, 0, 100, 24);
         let pr = compute(main, &s);
-        // 20 rows below the commit box: history gets 45% = 9.
-        assert_eq!(pr.commit, Some(Rect::new(0, 0, 35, 4)));
-        assert_eq!(pr.changes, Some(Rect::new(0, 4, 35, 11)));
-        assert_eq!(pr.history, Some(Rect::new(0, 15, 35, 9)));
+        assert_eq!(pr.tabs, Some(Rect::new(0, 0, 35, 1)));
+        assert_eq!(pr.explorer, Some(Rect::new(0, 1, 35, 23)));
+        assert!(pr.commit.is_none() && pr.changes.is_none() && pr.history.is_none());
         assert_eq!(pr.diff, Rect::new(35, 0, 65, 24));
         assert_eq!(pr.divider, Some((34, 35)));
-        assert_eq!(pr.split_row, Some(15));
+        assert_eq!(pr.split_row, None);
+        // No split-row drag in the explorer: row 15 is just a tree row.
+        assert!(!s.on_mouse(
+            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 15),
+            main
+        ));
     }
 
     #[test]
     fn split_clamps_both_panels_to_four_rows() {
         let mut s = visible();
-        let main = Rect::new(0, 0, 100, 16); // below = 12
+        let main = Rect::new(0, 0, 100, 17); // below = 12
         s.history_height = Some(11); // would leave changes = 1
         let pr = compute(main, &s);
         // clamped: history <= 12-4 = 8
         assert_eq!(pr.changes.unwrap().height, 4);
         assert_eq!(pr.history.unwrap().height, 8);
         // Tiny space: even split.
-        let main = Rect::new(0, 0, 100, 10); // below = 6
+        let main = Rect::new(0, 0, 100, 11); // below = 6
         let pr = compute(main, &s);
         assert_eq!(pr.changes.unwrap().height, 3);
         assert_eq!(pr.history.unwrap().height, 3);
@@ -370,30 +442,30 @@ mod tests {
     #[test]
     fn drag_on_split_row_resizes_history() {
         let mut s = visible();
-        let main = Rect::new(0, 0, 100, 24);
-        // split_row = 15 (see compute test); press on it inside the sidebar.
+        let main = Rect::new(0, 0, 100, 25);
+        // split_row = 16 (see compute test); press on it inside the sidebar.
         assert!(s.on_mouse(
-            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 15),
+            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 16),
             main
         ));
         assert!(s.is_dragging());
-        // Drag up to row 10: history_height = bottom(24) - 10 = 14.
+        // Drag up to row 11: history_height = bottom(25) - 11 = 14.
         assert!(s.on_mouse(
-            &mouse(MouseEventKind::Drag(MouseButton::Left), 10, 10),
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 10, 11),
             main
         ));
-        assert!(s.on_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 10, 10), main));
+        assert!(s.on_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 10, 11), main));
         let pr = compute(main, &s);
         assert_eq!(pr.history.unwrap().height, 14);
         assert_eq!(pr.changes.unwrap().height, 6);
         // Down off the split row is not consumed.
         let mut s2 = visible();
         assert!(!s2.on_mouse(
-            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 14),
+            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 15),
             main
         ));
         // Hover on the split row marks the divider active.
-        assert!(!s2.on_mouse(&mouse(MouseEventKind::Moved, 10, 15), main));
+        assert!(!s2.on_mouse(&mouse(MouseEventKind::Moved, 10, 16), main));
         assert!(s2.divider_active());
     }
 
@@ -450,8 +522,10 @@ mod tests {
         s.width = Some(44);
         s.visible = false;
         s.history_height = Some(7);
+        s.view = SidebarView::Explorer;
         let p = s.to_prefs();
         assert_eq!(p.sidebar_width, Some(44));
+        assert_eq!(p.sidebar_view, SidebarView::Explorer);
         assert!(!p.sidebar_visible);
         assert_eq!(p.history_height, Some(7));
         let mut s2 = visible();

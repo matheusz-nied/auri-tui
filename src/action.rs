@@ -1,4 +1,6 @@
+use crate::fs::{DirEntry, FileDoc};
 use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
+use crate::layout::SidebarView;
 use crate::prefs::Preferences;
 
 /// Identifies a panel so focus and actions can be routed to it.
@@ -7,7 +9,11 @@ pub enum PanelId {
     CommitInput,
     Changes,
     History,
+    /// File tree (sidebar Explorer view).
+    Explorer,
     DiffView,
+    /// Read-only file viewer; shares the main pane with `DiffView`.
+    FileView,
 }
 
 /// The single message type that flows through the app.
@@ -86,6 +92,26 @@ pub enum Action {
         commit: Commit,
         file: CommitFile,
     },
+    /// Switch the sidebar between Explorer and Source Control (tab bar
+    /// click); the main pane follows: file viewer / diff. Executed by `App`.
+    SetSidebarView(SidebarView),
+    /// List these directories (side effect, executed by `App`). Emitted by
+    /// the explorer on expand and, for every visible dir, on each `Refresh`.
+    LoadDirs(Vec<String>),
+    /// One directory's sorted children. Vanished dirs produce nothing.
+    DirLoaded {
+        path: String,
+        entries: Vec<DirEntry>,
+    },
+    /// Open a workspace file in the file viewer; `App` reads it, makes the
+    /// viewer own the main pane and broadcasts `FileLoaded`.
+    OpenFile(String),
+    /// A freshly opened file (receivers reset their scroll).
+    FileLoaded(FileDoc),
+    /// The open file changed on disk (receivers keep their scroll).
+    FileReloaded(FileDoc),
+    /// Collapse every explorer folder (toolbar button; `App` ignores it).
+    ExplorerCollapseAll,
     /// Commit the staged changes with this message (side effect).
     Commit(String),
     CommitDone,

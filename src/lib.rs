@@ -4,6 +4,7 @@ pub mod app;
 pub mod component;
 pub mod components;
 pub mod event;
+pub mod fs;
 pub mod git;
 pub mod layout;
 pub mod prefs;

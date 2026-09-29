@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::AiPrefs;
+use crate::layout::SidebarView;
 
 /// The root preferences document. Add a new section as a field with
 /// `#[serde(default)]` — missing keys in existing files then deserialize
@@ -38,6 +39,8 @@ pub struct LayoutPrefs {
     pub sidebar_visible: bool,
     /// History panel height in rows; `None` = 45% below the commit box.
     pub history_height: Option<u16>,
+    /// `"explorer"` or `"source_control"`.
+    pub sidebar_view: SidebarView,
 }
 
 impl Default for LayoutPrefs {
@@ -46,6 +49,7 @@ impl Default for LayoutPrefs {
             sidebar_width: None,
             sidebar_visible: true,
             history_height: None,
+            sidebar_view: SidebarView::default(),
         }
     }
 }
@@ -200,6 +204,7 @@ mod tests {
                 sidebar_width: Some(50),
                 sidebar_visible: false,
                 history_height: Some(9),
+                sidebar_view: SidebarView::Explorer,
             },
             ..Default::default()
         };

@@ -2,8 +2,11 @@ pub mod changes;
 pub mod commit_input;
 pub mod confirm_dialog;
 pub mod diff_view;
+pub mod file_tree;
+pub mod file_view;
 pub mod history;
 pub mod hitbox;
+pub mod view_tabs;
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};

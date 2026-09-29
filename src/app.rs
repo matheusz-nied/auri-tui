@@ -16,19 +16,35 @@ use crate::components::changes::Changes;
 use crate::components::commit_input::CommitInput;
 use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
+use crate::components::file_tree::FileTree;
+use crate::components::file_view::FileView;
 use crate::components::history::{History, HISTORY_PAGE};
+use crate::components::hitbox::Hitboxes;
+use crate::components::view_tabs;
 use crate::event::{AppEvent, Events};
+use crate::fs::{FileStamp, FsBackend};
 use crate::git::{DiffSource, GitBackend, Section};
-use crate::layout::{self, Sidebar};
+use crate::layout::{self, Sidebar, SidebarView};
 use crate::prefs::{Preferences, PrefsStore};
 
+/// The file shown by `FileView`; `stamp` is its state when last read,
+/// compared on refresh to decide whether to re-read it.
+#[derive(Debug, Clone, PartialEq)]
+struct OpenFile {
+    path: String,
+    stamp: Option<FileStamp>,
+}
+
 /// Owns the components, the focus state, the last-frame layout rects and the
-/// action queue. It is the *only* place where `GitBackend` is called: side
-/// effects requested by components (`Refresh`, `ToggleStage`, `Commit`,
-/// `SelectFile`) are executed here and their results are broadcast back to all
-/// components as new actions.
+/// action queue. It is the *only* place where `GitBackend` and `FsBackend`
+/// are called: side effects requested by components (`Refresh`,
+/// `ToggleStage`, `Commit`, `SelectFile`, `LoadDirs`, `OpenFile`) are
+/// executed here and their results are broadcast back to all components as
+/// new actions.
 pub struct App {
     git: Box<dyn GitBackend>,
+    /// Workspace reads for the explorer and the file viewer.
+    fs: Box<dyn FsBackend>,
     /// Background AI commit-message generation; polled once per loop.
     ai: Box<dyn AiRunner>,
     events: Events,
@@ -47,15 +63,20 @@ pub struct App {
     /// Hidden (collapsed-sidebar) panels have no entry.
     rects: HashMap<PanelId, Rect>,
     status_bar: Rect,
-    /// Resizable/collapsible left column (commit input + changes list).
+    /// Resizable/collapsible left column (Explorer or Source Control view).
     sidebar: Sidebar,
     /// Area above the status bar from the last render; the divider lives in it.
     main_area: Rect,
     /// Last status snapshot, for the "nothing staged" commit check.
     last_status: Vec<crate::git::FileChange>,
     branch: String,
-    /// What the diff pane shows: a working-tree file or a commit file.
-    selected: Option<DiffSource>,
+    /// What `DiffView` shows: a working-tree file or a commit file.
+    diff: Option<DiffSource>,
+    /// What `FileView` shows. The main pane follows the sidebar view:
+    /// Source Control -> diff, Explorer -> file; both are kept.
+    file: Option<OpenFile>,
+    /// Explorer/Source Control tab buttons drawn last frame.
+    tab_hits: Hitboxes,
     /// HEAD hash from the last refresh — history reloads only when it moves.
     last_head: Option<String>,
     /// Whether `head()` has been fetched at least once.
@@ -92,16 +113,28 @@ fn should_refresh(last_input: Option<Instant>, now: Instant) -> bool {
 }
 
 impl App {
-    pub fn new(git: Box<dyn GitBackend>, store: Box<dyn PrefsStore>) -> Self {
+    pub fn new(
+        git: Box<dyn GitBackend>,
+        fs: Box<dyn FsBackend>,
+        store: Box<dyn PrefsStore>,
+    ) -> Self {
+        let root_name = git
+            .root()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let mut app = Self {
             git,
+            fs,
             ai: Box::new(ProcessRunner::default()),
             events: Events::default(),
             components: vec![
                 (PanelId::CommitInput, Box::new(CommitInput::default())),
                 (PanelId::Changes, Box::new(Changes::default())),
                 (PanelId::History, Box::new(History::default())),
+                (PanelId::Explorer, Box::new(FileTree::new(root_name))),
                 (PanelId::DiffView, Box::new(DiffView::default())),
+                (PanelId::FileView, Box::new(FileView::default())),
             ],
             overlays: vec![Box::new(ConfirmDialog::default())],
             focus: PanelId::Changes,
@@ -114,7 +147,9 @@ impl App {
             main_area: Rect::default(),
             last_status: Vec::new(),
             branch: String::new(),
-            selected: None,
+            diff: None,
+            file: None,
+            tab_hits: Hitboxes::default(),
             last_head: None,
             seen_head: false,
             last_diff: None,
@@ -140,6 +175,8 @@ impl App {
                 )));
             }
         }
+        // A persisted Explorer view starts focused on the tree.
+        app.ensure_focus_visible();
         app.enqueue(Action::PreferencesChanged(app.prefs.clone()));
         app
     }
@@ -252,6 +289,7 @@ impl App {
                     Ok(_) => {}
                     Err(e) => self.enqueue(Action::Error(format!("head: {e}"))),
                 }
+                self.reload_open_file();
             }
             Action::StatusLoaded(files) => {
                 // The broadcast above ran first, so if `Changes` had to move
@@ -268,7 +306,7 @@ impl App {
                 }
             }
             Action::SelectFile(file) => {
-                self.selected = Some(DiffSource::Working(file.clone()));
+                self.diff = Some(DiffSource::Working(file.clone()));
                 match self.git.diff(&file) {
                     Ok(doc) => {
                         self.last_diff = Some(doc.clone());
@@ -278,7 +316,7 @@ impl App {
                 }
             }
             Action::SelectCommitFile { commit, file } => {
-                self.selected = Some(DiffSource::Commit {
+                self.diff = Some(DiffSource::Commit {
                     hash: commit.hash.clone(),
                     file: file.clone(),
                 });
@@ -288,6 +326,29 @@ impl App {
                         self.enqueue(Action::DiffLoaded(doc));
                     }
                     Err(e) => self.enqueue(Action::Error(format!("diff: {e}"))),
+                }
+            }
+            Action::SetSidebarView(view) => self.set_view(view),
+            Action::LoadDirs(dirs) => {
+                for dir in dirs {
+                    match self.fs.read_dir(&dir) {
+                        Ok(Some(entries)) => self.enqueue(Action::DirLoaded { path: dir, entries }),
+                        // Vanished: the parent's fresh listing drops it.
+                        Ok(None) => {}
+                        Err(e) => self.enqueue(Action::Error(format!("explorer: {e}"))),
+                    }
+                }
+            }
+            Action::OpenFile(path) => {
+                // Stamp first: a write racing the read just causes one extra
+                // reload on the next refresh.
+                let stamp = self.fs.stamp(&path).ok().flatten();
+                match self.fs.read_file(&path) {
+                    Ok(doc) => {
+                        self.file = Some(OpenFile { path, stamp });
+                        self.enqueue(Action::FileLoaded(doc));
+                    }
+                    Err(e) => self.enqueue(Action::Error(format!("open: {e}"))),
                 }
             }
             Action::LoadHistory { skip } => match self.git.log(skip, HISTORY_PAGE) {
@@ -363,6 +424,10 @@ impl App {
             | Action::CommitMessageGenerating { .. }
             | Action::CommitMessageGenerated(_)
             | Action::CommitMessageFailed
+            | Action::DirLoaded { .. }
+            | Action::FileLoaded(_)
+            | Action::FileReloaded(_)
+            | Action::ExplorerCollapseAll
             | Action::PreferencesChanged(_) => {}
         }
     }
@@ -491,7 +556,7 @@ impl App {
     /// `last_status`. Broadcasts `DiffReloaded` only when the doc changed.
     /// Commit diffs are immutable — never reloaded.
     fn reload_selected_diff(&mut self) {
-        let Some(DiffSource::Working(sel)) = &self.selected else {
+        let Some(DiffSource::Working(sel)) = &self.diff else {
             return;
         };
         let still_there = self
@@ -511,9 +576,81 @@ impl App {
         }
     }
 
-    /// Whether a panel is on screen (only the diff survives a hidden sidebar).
+    /// Re-read the open file when its stamp changed on disk. A deleted
+    /// file keeps showing its last contents.
+    fn reload_open_file(&mut self) {
+        let Some(OpenFile { path, stamp }) = &self.file else {
+            return;
+        };
+        let (path, old) = (path.clone(), *stamp);
+        match self.fs.stamp(&path) {
+            Ok(Some(new)) if Some(new) != old => match self.fs.read_file(&path) {
+                Ok(doc) => {
+                    self.file = Some(OpenFile {
+                        path,
+                        stamp: Some(new),
+                    });
+                    self.enqueue(Action::FileReloaded(doc));
+                }
+                Err(e) => self.enqueue(Action::Error(format!("open: {e}"))),
+            },
+            Ok(_) => {}
+            Err(e) => self.enqueue(Action::Error(format!("open: {e}"))),
+        }
+    }
+
+    /// The panel that owns the main pane — it follows the sidebar view
+    /// (also while the sidebar is hidden).
+    fn main_panel(&self) -> PanelId {
+        match self.sidebar.view {
+            SidebarView::Explorer => PanelId::FileView,
+            SidebarView::SourceControl => PanelId::DiffView,
+        }
+    }
+
+    /// Switch the sidebar view (tab click / `SetSidebarView`), revealing the
+    /// sidebar. Focus on the main pane stays on the main pane; focus on a
+    /// sidebar panel moves to the new view's list.
+    fn set_view(&mut self, view: SidebarView) {
+        let on_main = matches!(self.focus, PanelId::DiffView | PanelId::FileView);
+        self.sidebar.visible = true;
+        self.sidebar.view = view;
+        if on_main {
+            self.focus = self.main_panel();
+        }
+        self.ensure_focus_visible();
+    }
+
+    /// Whether a panel is on screen: sidebar panels only in their view while
+    /// the sidebar is shown, main-pane panels only while they own it.
     fn panel_visible(&self, id: PanelId) -> bool {
-        self.sidebar.visible || id == PanelId::DiffView
+        let view = self.sidebar.visible.then_some(self.sidebar.view);
+        match id {
+            PanelId::CommitInput | PanelId::Changes | PanelId::History => {
+                view == Some(SidebarView::SourceControl)
+            }
+            PanelId::Explorer => view == Some(SidebarView::Explorer),
+            PanelId::DiffView | PanelId::FileView => id == self.main_panel(),
+        }
+    }
+
+    /// Move focus off a panel that just disappeared: to the sidebar view's
+    /// main list, or to the main pane when the sidebar is hidden.
+    fn ensure_focus_visible(&mut self) {
+        if self.panel_visible(self.focus) {
+            return;
+        }
+        self.focus = match (self.sidebar.visible, self.sidebar.view) {
+            (true, SidebarView::Explorer) => PanelId::Explorer,
+            (true, SidebarView::SourceControl) => PanelId::Changes,
+            (false, _) => self.main_panel(),
+        };
+    }
+
+    /// Show the sidebar in `view` and focus `panel` inside it.
+    fn show_view(&mut self, view: SidebarView, panel: PanelId) {
+        self.set_view(view);
+        self.focus = panel;
     }
 
     fn cycle_focus(&mut self, delta: isize) {
@@ -534,13 +671,11 @@ impl App {
         self.focus = self.components[next as usize].0;
     }
 
-    /// `b` — hide/show the sidebar, moving focus to the diff if it pointed at
-    /// a now-hidden panel.
+    /// `b` — hide/show the sidebar, moving focus to the main pane if it
+    /// pointed at a now-hidden panel.
     fn toggle_sidebar(&mut self) {
         self.sidebar.toggle();
-        if !self.sidebar.visible && self.focus != PanelId::DiffView {
-            self.focus = PanelId::DiffView;
-        }
+        self.ensure_focus_visible();
     }
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -625,24 +760,26 @@ impl App {
                         self.sidebar.grow(self.main_area.width);
                         return;
                     }
-                    // Reveal the sidebar when focusing a panel inside it.
+                    // Reveal the sidebar (in the right view) when focusing a
+                    // panel inside it.
+                    KeyCode::Char('e') => {
+                        self.show_view(SidebarView::Explorer, PanelId::Explorer);
+                        return;
+                    }
                     KeyCode::Char('c') => {
-                        self.sidebar.visible = true;
-                        self.enqueue(Action::Focus(PanelId::CommitInput));
+                        self.show_view(SidebarView::SourceControl, PanelId::CommitInput);
                         return;
                     }
                     KeyCode::Char('1') => {
-                        self.sidebar.visible = true;
-                        self.enqueue(Action::Focus(PanelId::Changes));
+                        self.show_view(SidebarView::SourceControl, PanelId::Changes);
                         return;
                     }
                     KeyCode::Char('3') => {
-                        self.sidebar.visible = true;
-                        self.enqueue(Action::Focus(PanelId::History));
+                        self.show_view(SidebarView::SourceControl, PanelId::History);
                         return;
                     }
                     KeyCode::Char('2') => {
-                        self.enqueue(Action::Focus(PanelId::DiffView));
+                        self.enqueue(Action::Focus(self.main_panel()));
                         return;
                     }
                     _ => {}
@@ -674,6 +811,13 @@ impl App {
         // everything else falls through to normal panel routing.
         if self.sidebar.on_mouse(&ev, self.main_area) {
             return;
+        }
+        // Explorer / Source Control tabs atop the sidebar.
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            if let Some(action) = self.tab_hits.hit(ev.column, ev.row) {
+                self.enqueue(action);
+                return;
+            }
         }
         let under = self
             .rects
@@ -720,12 +864,19 @@ impl App {
         if let Some(r) = pr.history {
             self.rects.insert(PanelId::History, r);
         }
-        self.rects.insert(PanelId::DiffView, pr.diff);
+        if let Some(r) = pr.explorer {
+            self.rects.insert(PanelId::Explorer, r);
+        }
+        self.rects.insert(self.main_panel(), pr.diff);
 
         for (id, comp) in &mut self.components {
             if let Some(rect) = self.rects.get(id).copied() {
                 comp.render(f, rect, *id == self.focus);
             }
+        }
+        self.tab_hits.clear();
+        if let Some(r) = pr.tabs {
+            view_tabs::render(f, r, self.sidebar.view, &mut self.tab_hits);
         }
         // Recolor the divider columns and the changes/history split row while
         // hovered/dragged so the user can see they are draggable.
@@ -766,7 +917,7 @@ impl App {
         let global = if self.focus == PanelId::CommitInput {
             "tab focus · r refresh"
         } else {
-            "q quit · tab focus · r refresh · b sidebar · [/] resize"
+            "q quit · tab focus · r refresh · e files · 1 git · b sidebar · [/] resize"
         };
         let panel_hints = self
             .components
@@ -799,6 +950,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::ai::{AiCommand, AiRunner};
+    use crate::fs::{DirEntry, EntryKind, FileDoc};
     use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
     use crate::prefs::{FileStore, LayoutPrefs, MemoryStore};
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -870,6 +1022,60 @@ mod tests {
         }
     }
 
+    /// In-memory workspace: directory listings plus file contents with a
+    /// version number that stands in for the on-disk stamp.
+    #[derive(Clone, Default)]
+    struct FakeFs {
+        dirs: Rc<RefCell<HashMap<String, Vec<DirEntry>>>>,
+        files: Rc<RefCell<HashMap<String, (String, u64)>>>,
+    }
+
+    impl FakeFs {
+        /// Root with `src/` and `README.md`, `src/` holding `main.rs`.
+        fn sample() -> Self {
+            let fs = FakeFs::default();
+            let e = |path: &str, kind| DirEntry {
+                name: path.rsplit('/').next().unwrap().to_string(),
+                path: path.to_string(),
+                kind,
+            };
+            fs.dirs.borrow_mut().insert(
+                String::new(),
+                vec![e("src", EntryKind::Dir), e("README.md", EntryKind::File)],
+            );
+            fs.dirs
+                .borrow_mut()
+                .insert("src".to_string(), vec![e("src/main.rs", EntryKind::File)]);
+            fs.write("README.md", "hello readme");
+            fs.write("src/main.rs", "fn main() {}");
+            fs
+        }
+
+        fn write(&self, path: &str, text: &str) {
+            let mut files = self.files.borrow_mut();
+            let version = files.get(path).map_or(0, |(_, v)| v + 1);
+            files.insert(path.to_string(), (text.to_string(), version));
+        }
+    }
+
+    impl FsBackend for FakeFs {
+        fn read_dir(&self, dir: &str) -> Result<Option<Vec<DirEntry>>> {
+            Ok(self.dirs.borrow().get(dir).cloned())
+        }
+        fn read_file(&self, path: &str) -> Result<FileDoc> {
+            match self.files.borrow().get(path) {
+                Some((text, _)) => Ok(crate::fs::decode_file(path, text.as_bytes(), false)),
+                None => anyhow::bail!("{path}: not found"),
+            }
+        }
+        fn stamp(&self, path: &str) -> Result<Option<FileStamp>> {
+            Ok(self.files.borrow().get(path).map(|(_, v)| FileStamp {
+                modified: None,
+                len: *v,
+            }))
+        }
+    }
+
     /// Records what `start` received and lets the test inject an outcome.
     #[derive(Clone, Default)]
     struct FakeRunner {
@@ -922,7 +1128,38 @@ mod tests {
     }
 
     fn app(store: MemoryStore) -> App {
-        App::new(Box::new(FakeGit), Box::new(store))
+        App::new(
+            Box::new(FakeGit),
+            Box::new(FakeFs::default()),
+            Box::new(store),
+        )
+    }
+
+    /// App over `FakeFs::sample()` with the first refresh (root listing)
+    /// already processed.
+    fn explorer_app(store: MemoryStore) -> (App, FakeFs) {
+        let fs = FakeFs::sample();
+        let mut app = App::new(Box::new(FakeGit), Box::new(fs.clone()), Box::new(store));
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        (app, fs)
+    }
+
+    /// Render the whole app into a 120x30 test terminal and return its text.
+    fn screen(app: &mut App) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| app.render(f)).unwrap();
+        let buf = term.backend().buffer();
+        let mut text = String::new();
+        for y in buf.area.top()..buf.area.bottom() {
+            for x in buf.area.left()..buf.area.right() {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        text
     }
 
     fn mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
@@ -1018,7 +1255,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("preferences.toml");
         std::fs::write(&path, "[[[bad").unwrap();
-        let mut app = App::new(Box::new(FakeGit), Box::new(FileStore::new(path.clone())));
+        let mut app = App::new(
+            Box::new(FakeGit),
+            Box::new(FakeFs::default()),
+            Box::new(FileStore::new(path.clone())),
+        );
         app.main_area = Rect::new(0, 0, 200, 30);
         app.dispatch();
         app.on_key(KeyEvent::from(KeyCode::Char(']')));
@@ -1157,5 +1398,149 @@ mod tests {
             "{:?}",
             app.message
         );
+    }
+
+    #[test]
+    fn explorer_lists_root_and_opens_file_in_viewer() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        assert_eq!(app.focus, PanelId::Explorer);
+        let text = screen(&mut app);
+        assert!(text.contains("Explorer · repo"), "{text}");
+        assert!(
+            text.contains("▸ src") && text.contains("README.md"),
+            "{text}"
+        );
+
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.dispatch();
+        assert_eq!(app.main_panel(), PanelId::FileView);
+        let text = screen(&mut app);
+        assert!(text.contains("1 hello readme"), "{text}");
+        assert!(app.rects.contains_key(&PanelId::FileView));
+        assert!(!app.rects.contains_key(&PanelId::DiffView));
+
+        // A diff selected meanwhile doesn't take the pane from the file.
+        app.enqueue(Action::SelectFile(staged_file()));
+        app.dispatch();
+        assert_eq!(app.main_panel(), PanelId::FileView);
+    }
+
+    #[test]
+    fn main_pane_follows_the_view_and_keeps_both_contents() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.dispatch();
+        app.on_key(KeyEvent::from(KeyCode::Char('1')));
+        assert_eq!(app.main_panel(), PanelId::DiffView);
+        screen(&mut app);
+        assert!(app.rects.contains_key(&PanelId::DiffView));
+        assert!(!app.rects.contains_key(&PanelId::FileView));
+        // Back in the Explorer the file is still there.
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        assert!(screen(&mut app).contains("1 hello readme"));
+    }
+
+    #[test]
+    fn tab_bar_click_switches_views() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        // 120 cols: sidebar = 42, tabs = two 21-col halves on row 0.
+        let text = screen(&mut app);
+        assert!(
+            text.lines().next().unwrap().contains("Explorer")
+                && text.lines().next().unwrap().contains("Source Control"),
+            "{text}"
+        );
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 5, 0));
+        app.dispatch();
+        assert_eq!(app.sidebar.view, SidebarView::Explorer);
+        assert_eq!(app.focus, PanelId::Explorer, "focus leaves hidden Changes");
+        screen(&mut app);
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 30, 0));
+        app.dispatch();
+        assert_eq!(app.sidebar.view, SidebarView::SourceControl);
+        assert_eq!(app.focus, PanelId::Changes);
+    }
+
+    #[test]
+    fn expanding_a_folder_loads_it_through_app() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.on_key(KeyEvent::from(KeyCode::Char('l'))); // expand `src`
+        app.dispatch();
+        let text = screen(&mut app);
+        assert!(text.contains("▾ src") && text.contains("main.rs"), "{text}");
+    }
+
+    #[test]
+    fn open_file_reloads_only_when_changed_on_disk() {
+        let (mut app, fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.dispatch();
+        fs.write("README.md", "edited elsewhere");
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        let text = screen(&mut app);
+        assert!(text.contains("1 edited elsewhere"), "{text}");
+        // Deleted: the last contents stay, no error.
+        fs.files.borrow_mut().clear();
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert!(screen(&mut app).contains("1 edited elsewhere"));
+        assert!(app.message.is_none(), "{:?}", app.message);
+    }
+
+    #[test]
+    fn failed_open_keeps_the_previous_file() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.enqueue(Action::OpenFile("missing.rs".to_string()));
+        app.dispatch();
+        assert!(matches!(&app.message, Some((m, true)) if m.contains("missing.rs")));
+        assert_eq!(app.file.as_ref().unwrap().path, "README.md");
+        assert!(screen(&mut app).contains("1 hello readme"));
+    }
+
+    #[test]
+    fn focus_follows_views_and_main_pane() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('2')));
+        app.dispatch();
+        assert_eq!(app.focus, PanelId::DiffView);
+        // Focus on the main pane stays on it when the view (tab) switches.
+        app.enqueue(Action::SetSidebarView(SidebarView::Explorer));
+        app.dispatch();
+        assert_eq!(app.focus, PanelId::FileView);
+        // Tab cycling skips the hidden Source Control panels.
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        app.dispatch();
+        assert_eq!(app.focus, PanelId::Explorer);
+        app.on_key(KeyEvent::from(KeyCode::Tab));
+        app.dispatch();
+        assert_eq!(app.focus, PanelId::FileView);
+        // `e`/`1` focus the view's list.
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        assert_eq!(app.focus, PanelId::Explorer);
+        app.on_key(KeyEvent::from(KeyCode::Char('1')));
+        assert_eq!(app.focus, PanelId::Changes);
+        assert_eq!(app.sidebar.view, SidebarView::SourceControl);
+    }
+
+    #[test]
+    fn sidebar_view_persists_and_restores_focus() {
+        let store = MemoryStore::new(None);
+        let (mut app, _fs) = explorer_app(store.clone());
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.sync_prefs();
+        assert_eq!(
+            store.saved().unwrap().layout.sidebar_view,
+            SidebarView::Explorer
+        );
+        let (app, _fs) = explorer_app(store);
+        assert_eq!(app.sidebar.view, SidebarView::Explorer);
+        assert_eq!(app.focus, PanelId::Explorer);
     }
 }
