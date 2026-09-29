@@ -12,6 +12,7 @@ use crate::component::Component;
 use crate::fs::tree::{Tree, TreeRow};
 use crate::fs::{parent, EntryKind};
 use crate::git::{FileChange, Section};
+use crate::icons::{dir_icon, file_icon, IconStyle};
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, code_color, selection_style, SCROLL_LINES};
@@ -20,6 +21,7 @@ use super::{border_style, code_color, selection_style, SCROLL_LINES};
 /// expand emits `LoadDirs` for that dir and every `Refresh` re-lists the
 /// visible ones, so created/deleted files show up. Files are decorated with
 /// their git status letter; folders containing changes get a colored `●`.
+/// Each row shows a colored folder/file-type icon (`crate::icons`).
 /// Opening a file emits `OpenFile`; `FileLoaded` marks it as the open file
 /// (shown in the main pane while the Explorer view is active).
 pub struct FileTree {
@@ -37,6 +39,8 @@ pub struct FileTree {
     open: Option<String>,
     /// Path -> status letter for changed files and their ancestor dirs.
     decorations: HashMap<String, char>,
+    /// Glyph set (`[explorer] icons` preference).
+    icons: IconStyle,
 }
 
 impl FileTree {
@@ -52,6 +56,7 @@ impl FileTree {
             hitboxes: Hitboxes::default(),
             open: None,
             decorations: HashMap::new(),
+            icons: IconStyle::default(),
         }
     }
 
@@ -190,17 +195,33 @@ pub fn decorations(files: &[FileChange]) -> HashMap<String, char> {
     out
 }
 
-/// ` {indent}{chevron}{name}` with the decoration in the last column (file
-/// letter or `●` for folders); the name is cut with `…` when it doesn't fit.
-fn tree_row_line(row: &TreeRow, deco: Option<char>, width: usize, style: Style) -> Line<'static> {
+/// ` {indent}{chevron}{icon} {name}` with the decoration in the last column
+/// (file letter or `●` for folders); the name is cut with `…` when it
+/// doesn't fit. The icon keeps its type color; the name takes the git color.
+fn tree_row_line(
+    row: &TreeRow,
+    deco: Option<char>,
+    icons: IconStyle,
+    width: usize,
+    style: Style,
+) -> Line<'static> {
     let chevron = match (row.kind, row.expanded) {
         (EntryKind::Dir, true) => "▾ ",
         (EntryKind::Dir, false) => "▸ ",
         (EntryKind::File, _) => "  ",
     };
-    let prefix = format!(" {}{chevron}", "  ".repeat(row.depth));
-    let prefix: String = prefix.chars().take(width).collect();
-    let prefix_w = prefix.chars().count();
+    let icon = match row.kind {
+        EntryKind::Dir => dir_icon(icons, row.expanded),
+        EntryKind::File => file_icon(icons, &row.name),
+    };
+    let indent = format!(" {}{chevron}", "  ".repeat(row.depth));
+    let indent: String = indent.chars().take(width).collect();
+    let indent_w = indent.chars().count();
+    let icon_text: String = format!("{} ", icon.glyph)
+        .chars()
+        .take(width - indent_w)
+        .collect();
+    let prefix_w = indent_w + icon_text.chars().count();
     // Name budget: minus the decoration column and one space before it.
     let budget = width.saturating_sub(prefix_w + 2);
     let name_len = row.name.chars().count();
@@ -223,7 +244,8 @@ fn tree_row_line(row: &TreeRow, deco: Option<char>, width: usize, style: Style) 
     let used = prefix_w + name.chars().count() + mark.chars().count();
     let pad = width.saturating_sub(used);
     Line::from(vec![
-        Span::styled(prefix, style.fg(Color::DarkGray)),
+        Span::styled(indent, style.fg(Color::DarkGray)),
+        Span::styled(icon_text, style.fg(icon.color)),
         Span::styled(name, name_style),
         Span::styled(" ".repeat(pad), style),
         Span::styled(mark, name_style),
@@ -295,6 +317,7 @@ impl Component for FileTree {
                 }
             }
             Action::StatusLoaded(files) => self.decorations = decorations(files),
+            Action::PreferencesChanged(prefs) => self.icons = prefs.explorer.icons,
             Action::ExplorerCollapseAll => {
                 self.tree.collapse_all();
                 self.rebuild();
@@ -361,7 +384,7 @@ impl Component for FileTree {
                     Style::default()
                 };
                 let deco = self.decorations.get(&row.path).copied();
-                tree_row_line(row, deco, width, style)
+                tree_row_line(row, deco, self.icons, width, style)
             })
             .collect();
         f.render_widget(Paragraph::new(lines), inner);
@@ -534,18 +557,68 @@ mod tests {
         assert!(!d.contains_key(""));
     }
 
+    fn row(path: &str, depth: usize, kind: EntryKind, expanded: bool) -> TreeRow {
+        TreeRow {
+            path: path.to_string(),
+            name: path.rsplit('/').next().unwrap().to_string(),
+            depth,
+            kind,
+            expanded,
+        }
+    }
+
+    fn text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     #[test]
     fn row_line_truncates_and_marks() {
-        let row = TreeRow {
-            path: "src/very_long_file_name.rs".to_string(),
-            name: "very_long_file_name.rs".to_string(),
-            depth: 1,
-            kind: EntryKind::File,
-            expanded: false,
-        };
-        let line = tree_row_line(&row, Some('M'), 16, Style::default());
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "     very_lon… M");
-        assert_eq!(text.chars().count(), 16);
+        let r = row("src/very_long_file_name.rs", 1, EntryKind::File, false);
+        let line = tree_row_line(&r, Some('M'), IconStyle::Text, 19, Style::default());
+        assert_eq!(text(&line), "     rs very_lon… M");
+        assert_eq!(text(&line).chars().count(), 19);
+    }
+
+    #[test]
+    fn row_line_icons_align_and_keep_their_color() {
+        let dir = row("src", 0, EntryKind::Dir, true);
+        let file = row("README.md", 0, EntryKind::File, false);
+        let d = tree_row_line(&dir, None, IconStyle::Text, 20, Style::default());
+        let f = tree_row_line(&file, Some('M'), IconStyle::Text, 20, Style::default());
+        assert!(text(&d).starts_with(" ▾ ▰  src"));
+        assert!(text(&f).starts_with("   M↓ README.md"));
+        // Names start in the same column; the icon keeps its type color
+        // while the name takes the git status color.
+        assert_eq!(
+            text(&d).find("src").map(|i| text(&d)[..i].chars().count()),
+            Some(6)
+        );
+        assert_eq!(
+            text(&f)
+                .find("README")
+                .map(|i| text(&f)[..i].chars().count()),
+            Some(6)
+        );
+        assert_eq!(
+            f.spans[1].style.fg,
+            Some(file_icon(IconStyle::Text, "README.md").color)
+        );
+        assert_eq!(f.spans[2].style.fg, Some(code_color('M')));
+        // Nerd style swaps only the glyph.
+        let n = tree_row_line(&file, None, IconStyle::Nerd, 20, Style::default());
+        assert!(text(&n).starts_with("   \u{e73e}  README.md"));
+    }
+
+    #[test]
+    fn icon_style_follows_preferences() {
+        let mut t = tree();
+        let mut prefs = crate::prefs::Preferences::default();
+        prefs.explorer.icons = IconStyle::Nerd;
+        t.update(&Action::PreferencesChanged(prefs));
+        let area = Rect::new(0, 0, 30, 5);
+        let mut term = Terminal::new(TestBackend::new(30, 5)).unwrap();
+        term.draw(|f| t.render(f, area, true)).unwrap();
+        // Row 1 = `src` (collapsed): " ▸ " then the closed-folder glyph.
+        assert_eq!(term.backend().buffer()[(4, 1)].symbol(), "\u{f07b}");
     }
 }

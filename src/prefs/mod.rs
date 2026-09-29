@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::AiPrefs;
+use crate::icons::IconStyle;
 use crate::layout::SidebarView;
 
 /// The root preferences document. Add a new section as a field with
@@ -28,6 +29,16 @@ pub struct Preferences {
     pub layout: LayoutPrefs,
     /// AI commit-message generation (`[ai]` section).
     pub ai: AiPrefs,
+    /// File explorer (`[explorer]` section).
+    pub explorer: ExplorerPrefs,
+}
+
+/// File explorer options.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExplorerPrefs {
+    /// `"text"` (badges any font can draw) or `"nerd"` (needs a Nerd Font).
+    pub icons: IconStyle,
 }
 
 /// Sidebar geometry persisted between runs.

@@ -31,6 +31,8 @@ components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                (modal overlay example)
 highlight.rs   syntax highlighting (syntect + two-face = bat's grammars,
                embedded, OneHalfDark): pure, incremental `Highlighter`
+icons.rs       explorer file-type icons: pure name -> (glyph, color);
+               `text` badges (any font) or `nerd` glyphs (Nerd Font)
 layout.rs      sidebar geometry: view (Explorer/Source Control), width/
                clamps/divider+split drag — pure, unit-tested
 prefs/         persisted user preferences: `Preferences` (TOML document),
@@ -70,7 +72,10 @@ arrives). On `Refresh` `App` re-reads the open file only when
 `fs.stamp()` changed; a deleted file keeps its last contents. Files over
 `fs::MAX_FILE_BYTES` are truncated; binaries (NUL in the first 8 KB) are
 not shown; tabs are expanded and control chars replaced at load. Tree rows
-get git decorations from `StatusLoaded` (`file_tree::decorations`). Tests
+get git decorations from `StatusLoaded` (`file_tree::decorations`) and a
+2-column colored icon from `icons.rs` (the name takes the git color, the
+icon keeps its type color); `[explorer] icons = "text" | "nerd"` picks the
+glyph set (`text` default — `nerd` shows boxes without a Nerd Font). Tests
 fake the filesystem with `FakeFs` in `app.rs`.
 
 Syntax highlighting (`highlight.rs`) is pure, so components own it:

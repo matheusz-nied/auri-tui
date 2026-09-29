@@ -7,5 +7,6 @@ pub mod event;
 pub mod fs;
 pub mod git;
 pub mod highlight;
+pub mod icons;
 pub mod layout;
 pub mod prefs;

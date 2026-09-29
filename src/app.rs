@@ -1408,7 +1408,7 @@ mod tests {
         let text = screen(&mut app);
         assert!(text.contains("Explorer · repo"), "{text}");
         assert!(
-            text.contains("▸ src") && text.contains("README.md"),
+            text.contains("▸ ▰  src") && text.contains("M↓ README.md"),
             "{text}"
         );
 
@@ -1470,7 +1470,10 @@ mod tests {
         app.on_key(KeyEvent::from(KeyCode::Char('l'))); // expand `src`
         app.dispatch();
         let text = screen(&mut app);
-        assert!(text.contains("▾ src") && text.contains("main.rs"), "{text}");
+        assert!(
+            text.contains("▾ ▰  src") && text.contains("rs main.rs"),
+            "{text}"
+        );
     }
 
     #[test]
