@@ -271,3 +271,136 @@ fn branch_returns_current_name() {
     let branch = git.branch().unwrap();
     assert!(!branch.is_empty());
 }
+
+/// A repo with a known 3-commit history: "first", "second", "third".
+fn make_history_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    git(&dir, &["init"]);
+    git(&dir, &["config", "user.name", "Tide Test"]);
+    git(&dir, &["config", "user.email", "tide@example.com"]);
+    for (name, content) in [
+        ("first.txt", "one\n"),
+        // Long enough that a one-line addition keeps >50% similarity,
+        // so rename detection in a later commit still fires.
+        ("second.txt", "two\ntwo\ntwo\ntwo\ntwo\n"),
+        ("third.txt", "three\n"),
+    ] {
+        fs::write(dir.path().join(name), content).unwrap();
+        git(&dir, &["add", name]);
+        git(&dir, &["commit", "-m", name.strip_suffix(".txt").unwrap()]);
+    }
+    dir
+}
+
+#[test]
+fn head_and_log_on_unborn_repo() {
+    let dir = make_unborn_repo();
+    let git = CliGit::new(dir.path());
+    assert_eq!(git.head().unwrap(), None);
+    assert!(git.log(0, 10).unwrap().is_empty());
+}
+
+#[test]
+fn log_is_newest_first_and_pages() {
+    let dir = make_history_repo();
+    let git = CliGit::new(dir.path());
+
+    assert!(git.head().unwrap().is_some());
+    let log = git.log(0, 10).unwrap();
+    assert_eq!(log.len(), 3);
+    assert_eq!(log[0].subject, "third");
+    assert_eq!(log[1].subject, "second");
+    assert_eq!(log[2].subject, "first");
+    assert_eq!(log[0].author, "Tide Test");
+    assert!(log[0].time > 0);
+    assert!(log[0].short.len() >= 7 && log[0].hash.starts_with(&log[0].short[..7]));
+
+    // skip=1, limit=1 returns the middle commit.
+    let page = git.log(1, 1).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].hash, log[1].hash);
+    // Past the end -> empty.
+    assert!(git.log(3, 10).unwrap().is_empty());
+}
+
+#[test]
+fn root_commit_files_are_all_added_and_diff_is_all_added() {
+    let dir = make_history_repo();
+    let git = CliGit::new(dir.path());
+    let root = git.log(2, 1).unwrap().remove(0);
+
+    let files = git.commit_files(&root.hash).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "first.txt");
+    assert_eq!(files[0].code, 'A');
+
+    let doc = git.commit_diff(&root.hash, &files[0]).unwrap();
+    assert_eq!(doc.path, "first.txt");
+    assert!(!doc.rows.is_empty());
+    for row in &doc.rows {
+        let right = row.right.as_ref().expect("added side present");
+        assert_eq!(right.kind, terminal_ide::git::CellKind::Added);
+    }
+}
+
+#[test]
+fn commit_files_report_modify_and_rename() {
+    let dir = make_history_repo();
+    // Fourth commit: modify first.txt and rename second.txt -> renamed.txt.
+    fs::write(dir.path().join("first.txt"), "one\nmore\n").unwrap();
+    git(&dir, &["mv", "second.txt", "renamed.txt"]);
+    fs::write(
+        dir.path().join("renamed.txt"),
+        "two\ntwo\ntwo\ntwo\ntwo\nrenamed\n",
+    )
+    .unwrap();
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-m", "fourth"]);
+    let git = CliGit::new(dir.path());
+    let head = git.log(0, 1).unwrap().remove(0);
+
+    let files = git.commit_files(&head.hash).unwrap();
+    let modified = files
+        .iter()
+        .find(|f| f.path == "first.txt")
+        .expect("M entry");
+    assert_eq!(modified.code, 'M');
+    let renamed = files
+        .iter()
+        .find(|f| f.path == "renamed.txt")
+        .expect("R entry");
+    assert_eq!(renamed.code, 'R');
+    assert_eq!(renamed.orig_path.as_deref(), Some("second.txt"));
+
+    // The rename diff shows the file content under the new path.
+    let doc = git.commit_diff(&head.hash, renamed).unwrap();
+    assert_eq!(doc.path, "renamed.txt");
+    assert!(doc.rows.iter().any(|r| r.right.as_ref().is_some_and(
+        |c| c.text.contains("renamed") && c.kind == terminal_ide::git::CellKind::Added
+    )));
+}
+
+#[test]
+fn merge_commit_files_diff_against_first_parent() {
+    let dir = make_history_repo();
+    // Branch off, add a file there, merge --no-ff back into the main branch.
+    git(&dir, &["switch", "-c", "feature"]);
+    fs::write(dir.path().join("feature.txt"), "feat\n").unwrap();
+    git(&dir, &["add", "feature.txt"]);
+    git(&dir, &["commit", "-m", "feature work"]);
+    git(&dir, &["switch", "-"]);
+    git(
+        &dir,
+        &["merge", "--no-ff", "-m", "merge feature", "feature"],
+    );
+    let git = CliGit::new(dir.path());
+    let merge = git.log(0, 1).unwrap().remove(0);
+    assert_eq!(merge.subject, "merge feature");
+
+    // Vs first parent (the pre-merge main tip), the merge brings only the
+    // branch's file — not the other commits' contents.
+    let files = git.commit_files(&merge.hash).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "feature.txt");
+    assert_eq!(files[0].code, 'A');
+}

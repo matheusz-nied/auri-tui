@@ -5,8 +5,8 @@ use std::process::{Command, Output};
 
 use anyhow::{bail, Context, Result};
 
-use super::parse::{parse_diff, parse_status};
-use super::{DiffDoc, FileChange, GitBackend, Section};
+use super::parse::{parse_diff, parse_log, parse_name_status, parse_status};
+use super::{Commit, CommitFile, DiffDoc, FileChange, GitBackend, Section};
 
 /// Context size for diffs: effectively the whole file, like VS Code.
 const FULL_CONTEXT: &str = "-U100000";
@@ -43,6 +43,19 @@ impl CliGit {
             bail!("git {} failed: {}", args.join(" "), stderr.trim());
         }
         Ok(output)
+    }
+
+    /// Revision to diff a commit against: its first parent, or the empty
+    /// tree object for a root commit (`git hash-object -t tree /dev/null`
+    /// produces the right hash for sha256 repos too).
+    fn commit_base(&self, hash: &str) -> Result<String> {
+        let parent = format!("{hash}^1");
+        let out = self.run(&["rev-parse", "--verify", "-q", &parent], &[1])?;
+        if out.status.success() {
+            return Ok(parent);
+        }
+        let out = self.run(&["hash-object", "-t", "tree", "/dev/null"], &[])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 }
 
@@ -166,6 +179,74 @@ impl GitBackend for CliGit {
         }
         let out = self.run(&["rev-parse", "--short", "HEAD"], &[])?;
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn head(&self) -> Result<Option<String>> {
+        let out = self.run(&["rev-parse", "--verify", "-q", "HEAD"], &[1])?;
+        if out.status.success() {
+            let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            Ok((!hash.is_empty()).then_some(hash))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn log(&self, skip: usize, limit: usize) -> Result<Vec<Commit>> {
+        // No HEAD on an unborn branch — no history yet.
+        if self.head()?.is_none() {
+            return Ok(Vec::new());
+        }
+        let out = self.run(
+            &[
+                "log",
+                "-z",
+                "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s",
+                &format!("--skip={skip}"),
+                "-n",
+                &limit.to_string(),
+                "HEAD",
+            ],
+            &[],
+        )?;
+        Ok(parse_log(&out.stdout))
+    }
+
+    fn commit_files(&self, hash: &str) -> Result<Vec<CommitFile>> {
+        let base = self.commit_base(hash)?;
+        let out = self.run(
+            &[
+                "diff",
+                "--name-status",
+                "-z",
+                "-M",
+                "--no-color",
+                &base,
+                hash,
+            ],
+            &[],
+        )?;
+        Ok(parse_name_status(&out.stdout))
+    }
+
+    fn commit_diff(&self, hash: &str, file: &CommitFile) -> Result<DiffDoc> {
+        let base = self.commit_base(hash)?;
+        let mut args = vec![
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            FULL_CONTEXT,
+            "-M",
+            base.as_str(),
+            hash,
+            "--",
+        ];
+        if let Some(orig) = &file.orig_path {
+            args.push(orig);
+        }
+        args.push(&file.path);
+        let out = self.run(&args, &[])?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(parse_diff(&file.path, &text))
     }
 }
 

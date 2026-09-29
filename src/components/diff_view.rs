@@ -7,7 +7,7 @@ use ratatui::Frame;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::git::{CellKind, DiffCell, DiffDoc, FileChange, RowKind};
+use crate::git::{CellKind, DiffCell, DiffDoc, DiffSource, RowKind};
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, SCROLL_LINES};
@@ -21,9 +21,9 @@ const FILLER_BG: Color = Color::Rgb(30, 30, 30);
 /// filler cells are hatched.
 pub struct DiffView {
     doc: Option<DiffDoc>,
-    /// The file the current `doc` belongs to; cleared when it disappears
-    /// from the status.
-    file: Option<FileChange>,
+    /// What the current `doc` belongs to; a working-tree source is cleared
+    /// when it disappears from the status, a commit source never is.
+    source: Option<DiffSource>,
     scroll_y: usize,
     scroll_x: usize,
     view_height: usize,
@@ -36,7 +36,7 @@ impl Default for DiffView {
     fn default() -> Self {
         Self {
             doc: None,
-            file: None,
+            source: None,
             scroll_y: 0,
             scroll_x: 0,
             view_height: 1,
@@ -72,7 +72,7 @@ impl DiffView {
 
     fn clear(&mut self) {
         self.doc = None;
-        self.file = None;
+        self.source = None;
         self.scroll_y = 0;
         self.scroll_x = 0;
     }
@@ -200,7 +200,14 @@ impl Component for DiffView {
     fn update(&mut self, action: &Action) -> Option<Action> {
         match action {
             Action::SelectFile(file) => {
-                self.file = Some(file.clone());
+                self.source = Some(DiffSource::Working(file.clone()));
+                self.doc = None;
+            }
+            Action::SelectCommitFile { commit, file } => {
+                self.source = Some(DiffSource::Commit {
+                    hash: commit.hash.clone(),
+                    file: file.clone(),
+                });
                 self.doc = None;
             }
             Action::DiffLoaded(doc) => self.set_doc(doc.clone(), true),
@@ -208,7 +215,9 @@ impl Component for DiffView {
             Action::DiffNextChange => self.jump_to_change(true),
             Action::DiffPrevChange => self.jump_to_change(false),
             Action::StatusLoaded(files) => {
-                if let Some(file) = &self.file {
+                // Working-tree diffs follow the status; commit diffs are
+                // immutable and stay.
+                if let Some(DiffSource::Working(file)) = &self.source {
                     let still_there = files
                         .iter()
                         .any(|f| f.path == file.path && f.section == file.section);
@@ -228,11 +237,18 @@ impl Component for DiffView {
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
         self.hitboxes.clear();
-        let breadcrumb = self
-            .doc
-            .as_ref()
-            .map(|d| d.path.replace('/', " › "))
-            .unwrap_or_else(|| "Diff".to_string());
+        // Commit diffs get the short hash as a breadcrumb prefix.
+        let breadcrumb = match &self.source {
+            Some(DiffSource::Commit { hash, file }) => {
+                let short = &hash[..hash.len().min(7)];
+                format!("{short} · {}", file.path.replace('/', " › "))
+            }
+            _ => self
+                .doc
+                .as_ref()
+                .map(|d| d.path.replace('/', " › "))
+                .unwrap_or_else(|| "Diff".to_string()),
+        };
         let block = Block::bordered()
             .title(format!(" {breadcrumb} "))
             .border_style(border_style(focused));
@@ -336,7 +352,7 @@ fn centered_hint(inner: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{DiffRow, Section};
+    use crate::git::{Commit, CommitFile, DiffRow, FileChange, Section};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -448,5 +464,44 @@ mod tests {
 
         v.update(&Action::DiffNextChange);
         assert_eq!(v.scroll_y, 10);
+    }
+
+    fn commit_file() -> (Commit, CommitFile) {
+        (
+            Commit {
+                hash: "abcdef1234567890".to_string(),
+                short: "abcdef1".to_string(),
+                author: "a".to_string(),
+                time: 0,
+                subject: "s".to_string(),
+            },
+            CommitFile {
+                path: "f.rs".to_string(),
+                orig_path: None,
+                code: 'M',
+            },
+        )
+    }
+
+    #[test]
+    fn status_load_clears_vanished_working_file_but_not_commit() {
+        let mut v = DiffView::default();
+        // Working-file diff vanishes from status -> cleared.
+        v.update(&Action::SelectFile(file()));
+        v.update(&Action::DiffLoaded(doc(5)));
+        v.update(&Action::StatusLoaded(vec![]));
+        assert!(v.doc.is_none());
+        assert!(v.source.is_none());
+
+        // Commit-sourced diff survives an empty status.
+        let (c, cf) = commit_file();
+        v.update(&Action::SelectCommitFile {
+            commit: c,
+            file: cf,
+        });
+        v.update(&Action::DiffLoaded(doc(5)));
+        v.update(&Action::StatusLoaded(vec![]));
+        assert!(v.doc.is_some());
+        assert!(matches!(v.source, Some(DiffSource::Commit { .. })));
     }
 }

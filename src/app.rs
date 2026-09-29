@@ -15,8 +15,9 @@ use crate::components::changes::Changes;
 use crate::components::commit_input::CommitInput;
 use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
+use crate::components::history::{History, HISTORY_PAGE};
 use crate::event::{AppEvent, Events};
-use crate::git::{FileChange, GitBackend, Section};
+use crate::git::{DiffSource, GitBackend, Section};
 use crate::layout::{self, Sidebar};
 
 /// Owns the components, the focus state, the last-frame layout rects and the
@@ -47,9 +48,14 @@ pub struct App {
     /// Area above the status bar from the last render; the divider lives in it.
     main_area: Rect,
     /// Last status snapshot, for the "nothing staged" commit check.
-    last_status: Vec<FileChange>,
+    last_status: Vec<crate::git::FileChange>,
     branch: String,
-    selected: Option<FileChange>,
+    /// What the diff pane shows: a working-tree file or a commit file.
+    selected: Option<DiffSource>,
+    /// HEAD hash from the last refresh — history reloads only when it moves.
+    last_head: Option<String>,
+    /// Whether `head()` has been fetched at least once.
+    seen_head: bool,
     /// Last diff doc broadcast to components — compared against fresh loads so
     /// unchanged diffs aren't re-sent on every refresh tick.
     last_diff: Option<crate::git::DiffDoc>,
@@ -82,6 +88,7 @@ impl App {
             components: vec![
                 (PanelId::CommitInput, Box::new(CommitInput::default())),
                 (PanelId::Changes, Box::new(Changes::default())),
+                (PanelId::History, Box::new(History::default())),
                 (PanelId::DiffView, Box::new(DiffView::default())),
             ],
             overlays: vec![Box::new(ConfirmDialog::default())],
@@ -96,6 +103,8 @@ impl App {
             last_status: Vec::new(),
             branch: String::new(),
             selected: None,
+            last_head: None,
+            seen_head: false,
             last_diff: None,
             message: None,
             last_input: None,
@@ -193,6 +202,17 @@ impl App {
                     Ok(b) => self.enqueue(Action::BranchLoaded(b)),
                     Err(e) => self.enqueue(Action::Error(format!("branch: {e}"))),
                 }
+                // History reloads only when HEAD moved (new commit, rebase,
+                // checkout...) — not on every tick.
+                match self.git.head() {
+                    Ok(head) if !self.seen_head || self.last_head != head => {
+                        self.seen_head = true;
+                        self.last_head = head;
+                        self.enqueue(Action::LoadHistory { skip: 0 });
+                    }
+                    Ok(_) => {}
+                    Err(e) => self.enqueue(Action::Error(format!("head: {e}"))),
+                }
             }
             Action::StatusLoaded(files) => {
                 // The broadcast above ran first, so if `Changes` had to move
@@ -202,14 +222,14 @@ impl App {
                 let select_queued = self
                     .queue
                     .iter()
-                    .any(|a| matches!(a, Action::SelectFile(_)));
+                    .any(|a| matches!(a, Action::SelectFile(_) | Action::SelectCommitFile { .. }));
                 self.last_status = files;
                 if !select_queued {
                     self.reload_selected_diff();
                 }
             }
             Action::SelectFile(file) => {
-                self.selected = Some(file.clone());
+                self.selected = Some(DiffSource::Working(file.clone()));
                 match self.git.diff(&file) {
                     Ok(doc) => {
                         self.last_diff = Some(doc.clone());
@@ -218,6 +238,27 @@ impl App {
                     Err(e) => self.enqueue(Action::Error(format!("diff: {e}"))),
                 }
             }
+            Action::SelectCommitFile { commit, file } => {
+                self.selected = Some(DiffSource::Commit {
+                    hash: commit.hash.clone(),
+                    file: file.clone(),
+                });
+                match self.git.commit_diff(&commit.hash, &file) {
+                    Ok(doc) => {
+                        self.last_diff = Some(doc.clone());
+                        self.enqueue(Action::DiffLoaded(doc));
+                    }
+                    Err(e) => self.enqueue(Action::Error(format!("diff: {e}"))),
+                }
+            }
+            Action::LoadHistory { skip } => match self.git.log(skip, HISTORY_PAGE) {
+                Ok(commits) => self.enqueue(Action::HistoryLoaded { skip, commits }),
+                Err(e) => self.enqueue(Action::Error(format!("log: {e}"))),
+            },
+            Action::LoadCommitFiles(hash) => match self.git.commit_files(&hash) {
+                Ok(files) => self.enqueue(Action::CommitFilesLoaded { hash, files }),
+                Err(e) => self.enqueue(Action::Error(format!("commit files: {e}"))),
+            },
             Action::ToggleStage(file) => {
                 let result = if file.section == Section::Staged {
                     self.git.unstage(&file.path)
@@ -268,19 +309,23 @@ impl App {
             }
             Action::BranchLoaded(branch) => self.branch = branch,
             // Handled entirely by components via `update`: Confirm opens the
-            // overlay, DiffPrev/DiffNext scroll the diff view.
+            // overlay, DiffPrev/DiffNext scroll the diff view, the *Loaded
+            // data actions feed the panels.
             Action::DiffLoaded(_)
             | Action::DiffReloaded(_)
             | Action::Confirm { .. }
             | Action::DiffPrevChange
-            | Action::DiffNextChange => {}
+            | Action::DiffNextChange
+            | Action::HistoryLoaded { .. }
+            | Action::CommitFilesLoaded { .. } => {}
         }
     }
 
     /// Reload the diff of the currently selected file, if it still exists in
     /// `last_status`. Broadcasts `DiffReloaded` only when the doc changed.
+    /// Commit diffs are immutable — never reloaded.
     fn reload_selected_diff(&mut self) {
-        let Some(sel) = &self.selected else {
+        let Some(DiffSource::Working(sel)) = &self.selected else {
             return;
         };
         let still_there = self
@@ -327,7 +372,7 @@ impl App {
     /// a now-hidden panel.
     fn toggle_sidebar(&mut self) {
         self.sidebar.toggle();
-        if !self.sidebar.visible && matches!(self.focus, PanelId::CommitInput | PanelId::Changes) {
+        if !self.sidebar.visible && self.focus != PanelId::DiffView {
             self.focus = PanelId::DiffView;
         }
     }
@@ -406,6 +451,11 @@ impl App {
                         self.enqueue(Action::Focus(PanelId::Changes));
                         return;
                     }
+                    KeyCode::Char('3') => {
+                        self.sidebar.visible = true;
+                        self.enqueue(Action::Focus(PanelId::History));
+                        return;
+                    }
                     KeyCode::Char('2') => {
                         self.enqueue(Action::Focus(PanelId::DiffView));
                         return;
@@ -482,6 +532,9 @@ impl App {
         if let Some(r) = pr.changes {
             self.rects.insert(PanelId::Changes, r);
         }
+        if let Some(r) = pr.history {
+            self.rects.insert(PanelId::History, r);
+        }
         self.rects.insert(PanelId::DiffView, pr.diff);
 
         for (id, comp) in &mut self.components {
@@ -489,8 +542,8 @@ impl App {
                 comp.render(f, rect, *id == self.focus);
             }
         }
-        // Recolor both divider border columns while hovered/dragged so the
-        // user can see it is draggable.
+        // Recolor the divider columns and the changes/history split row while
+        // hovered/dragged so the user can see they are draggable.
         if self.sidebar.divider_active() {
             if let Some((a, b)) = pr.divider {
                 for col in [a, b] {
@@ -498,6 +551,13 @@ impl App {
                         if let Some(cell) = f.buffer_mut().cell_mut((col, row)) {
                             cell.set_fg(Color::Cyan);
                         }
+                    }
+                }
+            }
+            if let (Some(row), Some(panel)) = (pr.split_row, pr.changes) {
+                for col in panel.x..panel.x + panel.width {
+                    if let Some(cell) = f.buffer_mut().cell_mut((col, row)) {
+                        cell.set_fg(Color::Cyan);
                     }
                 }
             }

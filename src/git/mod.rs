@@ -68,6 +68,37 @@ pub struct DiffDoc {
     pub binary: bool,
 }
 
+/// One commit in the branch history (newest first as returned by `git log`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    /// Unix timestamp (committer/author date as reported by `%at`).
+    pub time: i64,
+    pub subject: String,
+}
+
+/// One file touched by a commit (`git diff --name-status <base> <hash>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitFile {
+    /// The new path (for renames/copies, the destination).
+    pub path: String,
+    /// Original path for renames/copies.
+    pub orig_path: Option<String>,
+    /// One-letter status: A M D R C T.
+    pub code: char,
+}
+
+/// What the diff pane is currently showing: a working-tree change or a file
+/// inside a specific commit. `App` tracks this to decide what to reload on
+/// refresh; `DiffView` tracks it so status updates only clear working diffs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiffSource {
+    Working(FileChange),
+    Commit { hash: String, file: CommitFile },
+}
+
 /// The only interface the rest of the app uses to talk to git. Implementations
 /// live behind `Box<dyn GitBackend>` inside `App`, so components stay fully
 /// decoupled from git and can be tested with a mock backend.
@@ -83,4 +114,14 @@ pub trait GitBackend {
     fn unstage_all(&self) -> Result<()>;
     fn commit(&self, message: &str) -> Result<()>;
     fn branch(&self) -> Result<String>;
+    /// HEAD's full hash; `None` on an unborn branch (repo with no commits).
+    fn head(&self) -> Result<Option<String>>;
+    /// Commits of HEAD, newest first. Empty on an unborn branch.
+    fn log(&self, skip: usize, limit: usize) -> Result<Vec<Commit>>;
+    /// Files changed by `hash`, diffed against its first parent (or the
+    /// empty tree for a root commit).
+    fn commit_files(&self, hash: &str) -> Result<Vec<CommitFile>>;
+    /// Full-context diff of `file` between the commit's first parent (or the
+    /// empty tree) and the commit itself.
+    fn commit_diff(&self, hash: &str, file: &CommitFile) -> Result<DiffDoc>;
 }

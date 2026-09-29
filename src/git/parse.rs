@@ -1,7 +1,9 @@
 //! Pure parsing functions: `git status --porcelain=v1 -z` output and unified
 //! diffs. No I/O happens here so everything is unit-testable.
 
-use crate::git::{CellKind, DiffCell, DiffDoc, DiffRow, FileChange, RowKind, Section};
+use crate::git::{
+    CellKind, Commit, CommitFile, DiffCell, DiffDoc, DiffRow, FileChange, RowKind, Section,
+};
 
 /// Parse `git status --porcelain=v1 -z` output.
 ///
@@ -178,6 +180,62 @@ fn flush_changed(rows: &mut Vec<DiffRow>, removed: &mut Vec<DiffCell>, added: &m
 
 fn expand_tabs(s: &str) -> String {
     s.replace('\t', "    ")
+}
+
+/// Parse `git log -z --format=%H%x1f%h%x1f%an%x1f%at%x1f%s` output:
+/// NUL-separated records of five `\x1f`-separated fields
+/// (full hash, short hash, author, unix time, subject). Tolerates stray
+/// newlines/whitespace around records and fields.
+pub fn parse_log(data: &[u8]) -> Vec<Commit> {
+    let mut commits = Vec::new();
+    for record in data.split(|b| *b == 0) {
+        let fields: Vec<&[u8]> = record.split(|b| *b == 0x1f).collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let text = |f: &[u8]| String::from_utf8_lossy(f).trim().to_string();
+        let time = text(fields[3]).parse::<i64>().unwrap_or(0);
+        commits.push(Commit {
+            hash: text(fields[0]),
+            short: text(fields[1]),
+            author: text(fields[2]),
+            time,
+            subject: text(fields[4]),
+        });
+    }
+    commits
+}
+
+/// Parse `git diff --name-status -z` output. Records are `STATUS\0path\0`
+/// pairs; `R`/`C` statuses are followed by the original path then the new
+/// path (`R100\0old\0new\0`).
+pub fn parse_name_status(data: &[u8]) -> Vec<CommitFile> {
+    let mut fields = data.split(|b| *b == 0);
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        if status.is_empty() {
+            continue;
+        }
+        let code = status[0] as char;
+        let Some(first) = fields.next() else { break };
+        if first.is_empty() {
+            break;
+        }
+        let first = String::from_utf8_lossy(first).into_owned();
+        let (path, orig_path) = if matches!(code, 'R' | 'C') {
+            // Rename/copy: old path first, then the new path.
+            let Some(new) = fields.next() else { break };
+            (String::from_utf8_lossy(new).into_owned(), Some(first))
+        } else {
+            (first, None)
+        };
+        files.push(CommitFile {
+            path,
+            orig_path,
+            code,
+        });
+    }
+    files
 }
 
 #[cfg(test)]
@@ -380,5 +438,57 @@ deleted file mode 100644
         assert_eq!(doc.rows.len(), 1);
         assert_eq!(doc.rows[0].kind, RowKind::Changed);
         assert_eq!(doc.rows[0].left.as_ref().unwrap().text, "last");
+    }
+
+    #[test]
+    fn log_parses_nul_separated_records() {
+        let data = "aaa111\x1faaa111\x1fAlice\x1f1700000000\x1ffirst commit\0\
+                    bbb222\x1fbbb222\x1fBob Smith\x1f1700001000\x1ffix: spaced &amp; unicode caf\u{e9}\0"
+            .as_bytes()
+            .to_vec();
+        let commits = parse_log(&data);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "aaa111");
+        assert_eq!(commits[0].subject, "first commit");
+        assert_eq!(commits[1].author, "Bob Smith");
+        assert_eq!(commits[1].time, 1700001000);
+        assert_eq!(commits[1].subject, "fix: spaced &amp; unicode caf\u{e9}");
+    }
+
+    #[test]
+    fn log_tolerates_trailing_newlines_and_junk() {
+        let data = b"aaa111\x1faaa111\x1fA\x1f1700000000\x1fsubj\n\0\n\0";
+        let commits = parse_log(data);
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "subj");
+        assert!(parse_log(b"").is_empty());
+    }
+
+    #[test]
+    fn name_status_parses_modify_add_delete() {
+        let data = b"M\0src/lib.rs\0A\0new.rs\0D\0gone.rs\0";
+        let files = parse_name_status(data);
+        assert_eq!(files.len(), 3);
+        assert_eq!(
+            files[0],
+            CommitFile {
+                path: "src/lib.rs".to_string(),
+                orig_path: None,
+                code: 'M'
+            }
+        );
+        assert_eq!(files[1].code, 'A');
+        assert_eq!(files[2].code, 'D');
+    }
+
+    #[test]
+    fn name_status_rename_consumes_old_and_new() {
+        let data = b"R100\0old/dir.rs\0new/dir.rs\0M\0other.rs\0";
+        let files = parse_name_status(data);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].code, 'R');
+        assert_eq!(files[0].path, "new/dir.rs");
+        assert_eq!(files[0].orig_path.as_deref(), Some("old/dir.rs"));
+        assert_eq!(files[1].path, "other.rs");
     }
 }

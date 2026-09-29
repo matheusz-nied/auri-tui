@@ -1,10 +1,11 @@
-use crate::git::{DiffDoc, FileChange};
+use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
 
 /// Identifies a panel so focus and actions can be routed to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelId {
     CommitInput,
     Changes,
+    History,
     DiffView,
 }
 
@@ -61,6 +62,29 @@ pub enum Action {
     /// `DiffView::update`; `App` ignores them).
     DiffPrevChange,
     DiffNextChange,
+    /// Fetch a page of commits (`skip` = how many commits are already shown).
+    /// Executed by `App`.
+    LoadHistory {
+        skip: usize,
+    },
+    /// A page of commits for the History panel.
+    HistoryLoaded {
+        skip: usize,
+        commits: Vec<Commit>,
+    },
+    /// Fetch the files changed by a commit (side effect, executed by `App`).
+    LoadCommitFiles(String),
+    /// Files of an expanded commit row.
+    CommitFilesLoaded {
+        hash: String,
+        files: Vec<CommitFile>,
+    },
+    /// Open one file's diff inside a commit; `App` runs `commit_diff` and
+    /// broadcasts `DiffLoaded` (fresh — scroll resets to the first change).
+    SelectCommitFile {
+        commit: Commit,
+        file: CommitFile,
+    },
     /// Commit the staged changes with this message (side effect).
     Commit(String),
     CommitDone,

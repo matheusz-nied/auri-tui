@@ -10,7 +10,7 @@ use crate::component::Component;
 use crate::git::{FileChange, Section};
 
 use super::hitbox::{button_span, Hitboxes};
-use super::{border_style, selection_style, SCROLL_LINES};
+use super::{border_style, file_row_line, selection_style, SCROLL_LINES};
 
 /// VS Code–style changes list: a "Staged Changes" section followed by a
 /// "Changes" section (unstaged + untracked). Section headers are rendered but
@@ -25,6 +25,13 @@ pub struct Changes {
     scroll: usize,
     view_height: usize,
     hitboxes: Hitboxes,
+    /// Whether this list owns the current diff selection. `false` while the
+    /// diff shows a commit file (History owns it): the selection is then
+    /// rendered dimmed and clicking/re-navigating re-emits `SelectFile`.
+    active: bool,
+    /// Whether at least one `StatusLoaded` was seen (first load auto-selects
+    /// even when inactive).
+    seen_status: bool,
 }
 
 enum Row {
@@ -43,6 +50,8 @@ impl Default for Changes {
             scroll: 0,
             view_height: 1,
             hitboxes: Hitboxes::default(),
+            active: true,
+            seen_status: false,
         }
     }
 }
@@ -91,7 +100,12 @@ impl Changes {
         };
         self.ensure_visible();
         let now = self.selected_file();
-        if now != prev {
+        // Don't emit while the user is browsing a commit diff — a tick would
+        // otherwise yank the diff back to a working file. The very first
+        // load always auto-selects so the diff pane isn't empty on start.
+        let emit = now != prev && (self.active || !self.seen_status);
+        self.seen_status = true;
+        if emit {
             now.map(Action::SelectFile)
         } else {
             None
@@ -142,6 +156,12 @@ impl Changes {
         if self.rows.is_empty() {
             return None;
         }
+        // While inactive (a commit diff is open), the first j/k press just
+        // re-activates this list's selection instead of moving.
+        if !self.active {
+            self.active = true;
+            return self.selected_file().map(Action::SelectFile);
+        }
         let mut i = self.selected as isize;
         loop {
             i += delta;
@@ -184,25 +204,6 @@ fn discard_confirm(f: &FileChange) -> Action {
     }
 }
 
-fn code_color(code: char) -> Color {
-    match code {
-        'M' => Color::Yellow,
-        'A' | 'U' => Color::Green,
-        'D' => Color::Red,
-        'R' | 'C' => Color::Blue,
-        _ => Color::White,
-    }
-}
-
-fn button_color(glyph: &str) -> Color {
-    match glyph {
-        "+" => Color::Green,
-        "−" => Color::Blue,
-        "↶" => Color::Red,
-        _ => Color::White,
-    }
-}
-
 /// The buttons a file row offers, as `(glyph, action)` in display order.
 fn row_buttons(f: &FileChange) -> Vec<(&'static str, Action)> {
     match f.section {
@@ -212,67 +213,6 @@ fn row_buttons(f: &FileChange) -> Vec<(&'static str, Action)> {
             ("+", Action::ToggleStage(f.clone())),
         ],
     }
-}
-
-/// Build the line for a file row plus its button hitboxes, expressed as
-/// `(x_offset, action)` relative to the inner area's left edge.
-fn file_row_line(
-    f: &FileChange,
-    width: usize,
-    style: Style,
-    show_buttons: bool,
-) -> (Line<'static>, Vec<(u16, Action)>) {
-    let buttons = if show_buttons {
-        row_buttons(f)
-    } else {
-        Vec::new()
-    };
-    let code = f.code.to_string();
-    // code at the last column, buttons (3 cols each) right before it.
-    let btn_w = buttons.len() * 3;
-    // Space for " name dir": leading space + text, minus code and buttons.
-    let avail = width.saturating_sub(code.len() + btn_w);
-    // Too narrow for buttons: drop them and use the width for text instead.
-    let (buttons, btn_w, avail) = if btn_w > 0 && avail < 4 {
-        (Vec::new(), 0, width.saturating_sub(code.len()))
-    } else {
-        (buttons, btn_w, avail)
-    };
-
-    // VS Code style: `action.rs src` — name, then the dim parent dir.
-    let (dir, name) = match f.path.rsplit_once('/') {
-        Some((d, n)) => (d.to_string(), n.to_string()),
-        None => (String::new(), f.path.clone()),
-    };
-    let name_span = format!(" {name}");
-    let dir_span = if dir.is_empty() {
-        String::new()
-    } else {
-        format!(" {dir}")
-    };
-    let name_w = name_span.chars().count().min(avail);
-    let name_txt: String = name_span.chars().take(name_w).collect();
-    let dir_w = dir_span.chars().count().min(avail.saturating_sub(name_w));
-    let dir_txt: String = dir_span.chars().take(dir_w).collect();
-    let used = name_w + dir_w;
-    let pad = avail.saturating_sub(used);
-
-    let mut spans = vec![
-        Span::styled(name_txt, style),
-        Span::styled(dir_txt, style.fg(Color::DarkGray)),
-        Span::styled(" ".repeat(pad), style),
-    ];
-    let mut hits = Vec::new();
-    // Buttons sit right before the code column, at fixed offsets from the
-    // right edge.
-    let mut x = (width - code.len() - btn_w) as u16;
-    for (glyph, action) in &buttons {
-        spans.push(button_span(glyph, style.fg(button_color(glyph))));
-        hits.push((x, action.clone()));
-        x += 3;
-    }
-    spans.push(Span::styled(code, style.fg(code_color(f.code))));
-    (Line::from(spans), hits)
 }
 
 impl Component for Changes {
@@ -307,9 +247,12 @@ impl Component for Changes {
                 }
                 let idx = self.scroll + (ev.row - area.y - 1) as usize;
                 match self.rows.get(idx) {
-                    Some(Row::File(_)) if idx == self.selected => None,
+                    // Clicking the already-selected row is a no-op only while
+                    // this list owns the diff; otherwise it re-activates it.
+                    Some(Row::File(_)) if idx == self.selected && self.active => None,
                     Some(Row::File(_)) => {
                         self.selected = idx;
+                        self.active = true;
                         self.ensure_visible();
                         self.selected_file().map(Action::SelectFile)
                     }
@@ -348,10 +291,16 @@ impl Component for Changes {
             // Follow selections made elsewhere (e.g. App re-selecting a file
             // that moved section after staging).
             Action::SelectFile(file) => {
+                self.active = true;
                 if let Some(i) = self.row_index_of(&file.path, file.section) {
                     self.selected = i;
                     self.ensure_visible();
                 }
+                None
+            }
+            // A commit file was opened — this list no longer owns the diff.
+            Action::SelectCommitFile { .. } => {
+                self.active = false;
                 None
             }
             _ => None,
@@ -406,12 +355,19 @@ impl Component for Changes {
                 }
                 Row::File(fc) => {
                     let style = if i == self.selected {
-                        selection_style(focused)
+                        // Dimmed selection while a commit diff owns the pane.
+                        selection_style(focused && self.active)
                     } else {
                         Style::default()
                     };
                     let show_buttons = i == self.selected || self.hover == Some(i);
-                    let (line, row_hits) = file_row_line(fc, width, style, show_buttons);
+                    let buttons = if show_buttons {
+                        row_buttons(fc)
+                    } else {
+                        Vec::new()
+                    };
+                    let (line, row_hits) =
+                        file_row_line(&fc.path, fc.code, 1, width, style, &buttons);
                     let y = inner.y + (i - self.scroll) as u16;
                     for (x, action) in row_hits {
                         hits.push((inner.x + x, y, action));
@@ -463,6 +419,10 @@ mod tests {
             row,
             modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
         }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, ratatui::crossterm::event::KeyModifiers::NONE)
     }
 
     #[test]
@@ -616,5 +576,55 @@ mod tests {
         assert_eq!(term.backend().buffer()[(13, 3)].symbol(), "↶");
         // Selected row (a.rs at y=2) shows its buttons too.
         assert_eq!(term.backend().buffer()[(16, 2)].symbol(), "+");
+    }
+
+    fn commit_select() -> Action {
+        use crate::git::{Commit, CommitFile};
+        Action::SelectCommitFile {
+            commit: Commit {
+                hash: "abc".into(),
+                short: "abc".into(),
+                author: "a".into(),
+                time: 0,
+                subject: "s".into(),
+            },
+            file: CommitFile {
+                path: "x.rs".into(),
+                orig_path: None,
+                code: 'M',
+            },
+        }
+    }
+
+    #[test]
+    fn inactive_changes_reemit_selectfile_and_ignore_status_moves() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![fc("f.rs", Section::Unstaged)]));
+        assert!(c.active);
+        c.update(&commit_select());
+        assert!(!c.active);
+
+        // Status refresh while inactive emits nothing even though the
+        // selection silently moved — the user is browsing a commit diff.
+        let act = c.update(&Action::StatusLoaded(vec![fc("g.rs", Section::Unstaged)]));
+        assert!(act.is_none(), "inactive status move emitted {act:?}");
+
+        // j/k re-emits SelectFile for the current selection and reactivates.
+        let out = c.handle_key(key(KeyCode::Char('j')));
+        assert!(
+            matches!(&out, Some(Action::SelectFile(f)) if f.path == "g.rs"),
+            "expected SelectFile(g.rs), got {out:?}"
+        );
+        assert!(c.active);
+
+        // Deactivate again; clicking the already-selected row re-emits.
+        c.update(&commit_select());
+        let area = Rect::new(0, 0, 20, 8);
+        draw(&mut c, 20, 8);
+        let out = c.handle_mouse(click(5, 2), area);
+        assert!(
+            matches!(&out, Some(Action::SelectFile(f)) if f.path == "g.rs"),
+            "expected SelectFile(g.rs), got {out:?}"
+        );
     }
 }

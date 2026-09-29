@@ -18,16 +18,27 @@ action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
 git/           model types + GitBackend trait; `cli` shells out to git,
                `parse` has pure, unit-tested parsing functions
-components/    commit_input.rs, changes.rs, diff_view.rs, hitbox.rs,
-               confirm_dialog.rs (modal overlay example)
-layout.rs      sidebar geometry: width/clamps/divider drag — pure, unit-tested
+components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
+               hitbox.rs, confirm_dialog.rs (modal overlay example)
+layout.rs      sidebar geometry: width/clamps/divider+split drag — pure,
+               unit-tested
 ```
 
 Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
-`ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`) are executed
+`ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`,
+`LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`) are executed
 by `App` via `Box<dyn GitBackend>` → results (`StatusLoaded`, `DiffLoaded`,
-`Error`) are broadcast to every component's `update`.
+`HistoryLoaded`, `CommitFilesLoaded`, `Error`) are broadcast to every
+component's `update`.
+
+The diff pane's contents are described by `git::DiffSource`:
+`Working(FileChange)` is reloaded on status ticks and cleared when the file
+leaves the status; `Commit { hash, file }` is immutable — never reloaded or
+cleared. `Changes`/`History` each carry an `active` flag so only the list
+that owns the diff draws a strong selection; a status tick while a commit
+diff is open never steals it back. `History` refetches only when `head()`
+moves.
 
 ### Clickable buttons — `components/hitbox.rs`
 
@@ -42,11 +53,14 @@ there.
 
 ### Sidebar layout — `layout.rs`
 
-The left column (commit input + changes) is a resizable, collapsible sidebar.
-`Sidebar` owns width/visibility/drag state; `compute()` returns the panel
-rects each frame. `Sidebar::on_mouse` consumes divider presses/drags before
-they reach components — App calls it before panel routing. `b` toggles the
-sidebar, `[`/`]` resize it; `c`/`1` re-show it while focusing their panel.
+The left column (commit input + changes + commit history) is a resizable,
+collapsible sidebar. `Sidebar` owns width/visibility/drag state plus the
+changes/history split; `compute()` returns the panel rects each frame.
+`Sidebar::on_mouse` consumes divider presses/drags (vertical = sidebar width,
+horizontal split row = changes/history heights) before they reach
+components — App calls it before panel routing. `b` toggles the sidebar,
+`[`/`]` resize it; `c`/`1`/`3` re-show it while focusing CommitInput/
+Changes/History; `2` focuses the diff.
 
 ### Adding a new panel
 

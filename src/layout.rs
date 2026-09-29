@@ -9,26 +9,40 @@ pub const MIN_MAIN: u16 = 30;
 pub const RESIZE_STEP: u16 = 4;
 /// Commit input height inside the sidebar.
 const COMMIT_HEIGHT: u16 = 4;
+/// Minimum height for the changes and history panels.
+const MIN_PANEL: u16 = 4;
+/// Default share of the space below the commit box that history gets.
+const HISTORY_SHARE: u16 = 45;
 
-/// Sidebar (commit input + changes list) layout state: width, visibility and
-/// divider drag/hover. Pure value type — `App` owns one and re-renders every
-/// frame, so all mutation happens through these methods.
+/// Sidebar (commit input + changes list + commit history) layout state:
+/// width, visibility, divider drag/hover and the changes/history split.
+/// Pure value type — `App` owns one and re-renders every frame, so all
+/// mutation happens through these methods.
 #[derive(Debug)]
 pub struct Sidebar {
     /// Explicit width; `None` means "35% of the terminal".
     width: Option<u16>,
+    /// History panel height; `None` means 45% of the space below the
+    /// commit input box.
+    history_height: Option<u16>,
     pub visible: bool,
     dragging: bool,
+    /// Dragging the horizontal divider between Changes and Commits.
+    dragging_split: bool,
     hover_divider: bool,
+    hover_split: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
         Self {
             width: None,
+            history_height: None,
             visible: true,
             dragging: false,
+            dragging_split: false,
             hover_divider: false,
+            hover_split: false,
         }
     }
 }
@@ -72,7 +86,51 @@ impl Sidebar {
         self.visible = !self.visible;
         if !self.visible {
             self.dragging = false;
+            self.dragging_split = false;
             self.hover_divider = false;
+            self.hover_split = false;
+        }
+    }
+
+    /// Split the rows below the commit box into (changes, history) heights.
+    /// History defaults to 45%; when there's room, both panels keep at least
+    /// `MIN_PANEL` rows — below that the space is split evenly.
+    fn split_heights(&self, below: u16) -> (u16, u16) {
+        if below < 2 * MIN_PANEL {
+            let c = below / 2;
+            return (c, below - c);
+        }
+        let h = self.clamp_history(
+            self.history_height.unwrap_or(below * HISTORY_SHARE / 100),
+            below,
+        );
+        (below - h, h)
+    }
+
+    fn clamp_history(&self, h: u16, below: u16) -> u16 {
+        if below < 2 * MIN_PANEL {
+            return below / 2;
+        }
+        h.clamp(MIN_PANEL, below - MIN_PANEL)
+    }
+
+    /// The history panel's top border row — the horizontal drag target.
+    fn split_row(&self, main: Rect) -> Option<u16> {
+        let w = self.width_for(main.width);
+        if w == 0 || main.height <= COMMIT_HEIGHT {
+            return None;
+        }
+        let below = main.height - COMMIT_HEIGHT;
+        Some(main.y + COMMIT_HEIGHT + self.split_heights(below).0)
+    }
+
+    /// Whether the cursor is on the changes/history divider row, inside the
+    /// sidebar's column range.
+    fn on_split(&self, ev: &MouseEvent, main: Rect) -> bool {
+        let w = self.width_for(main.width);
+        match self.split_row(main) {
+            Some(row) => ev.row == row && ev.column >= main.x && ev.column < main.x + w,
+            None => false,
         }
     }
 
@@ -93,8 +151,8 @@ impl Sidebar {
         (ev.column == a || ev.column == b) && ev.row >= main.y && ev.row < main.y + main.height
     }
 
-    /// Route a mouse event against the divider. Returns `true` when consumed —
-    /// the caller must not forward it to any component.
+    /// Route a mouse event against the dividers. Returns `true` when
+    /// consumed — the caller must not forward it to any component.
     pub fn on_mouse(&mut self, ev: &MouseEvent, main: Rect) -> bool {
         use MouseEventKind as K;
         match ev.kind {
@@ -102,17 +160,29 @@ impl Sidebar {
                 self.dragging = true;
                 true
             }
+            K::Down(MouseButton::Left) if self.on_split(ev, main) => {
+                self.dragging_split = true;
+                true
+            }
             K::Drag(MouseButton::Left) if self.dragging => {
                 let w = ev.column.saturating_sub(main.x).saturating_add(1);
                 self.width = Some(self.clamp(w, main.width));
                 true
             }
-            K::Up(MouseButton::Left) if self.dragging => {
+            K::Drag(MouseButton::Left) if self.dragging_split => {
+                let below = main.height.saturating_sub(COMMIT_HEIGHT.min(main.height));
+                let h = (main.y + main.height).saturating_sub(ev.row);
+                self.history_height = Some(self.clamp_history(h, below));
+                true
+            }
+            K::Up(MouseButton::Left) if self.dragging || self.dragging_split => {
                 self.dragging = false;
+                self.dragging_split = false;
                 true
             }
             K::Moved => {
                 self.hover_divider = self.on_divider(ev, main);
+                self.hover_split = !self.hover_divider && self.on_split(ev, main);
                 false
             }
             _ => false,
@@ -120,22 +190,26 @@ impl Sidebar {
     }
 
     pub fn is_dragging(&self) -> bool {
-        self.dragging
+        self.dragging || self.dragging_split
     }
 
-    /// Divider is hovered or being dragged — draw it highlighted.
+    /// A divider is hovered or being dragged — draw it highlighted.
     pub fn divider_active(&self) -> bool {
-        self.hover_divider || self.dragging
+        self.hover_divider || self.dragging || self.hover_split || self.dragging_split
     }
 }
 
-/// Screen rects for the three panels plus the divider hit-zone columns
-/// `(sidebar right border, diff left border)`.
+/// Screen rects for the panels plus divider hit zones: the vertical
+/// `(sidebar right border, diff left border)` columns and the changes/
+/// history split row.
 pub struct PanelRects {
     pub commit: Option<Rect>,
     pub changes: Option<Rect>,
+    pub history: Option<Rect>,
     pub diff: Rect,
     pub divider: Option<(u16, u16)>,
+    /// Row of the history panel's top border (the horizontal drag target).
+    pub split_row: Option<u16>,
 }
 
 /// Split `main` (the frame minus the status bar) into sidebar + diff pane.
@@ -145,21 +219,28 @@ pub fn compute(main: Rect, sidebar: &Sidebar) -> PanelRects {
         return PanelRects {
             commit: None,
             changes: None,
+            history: None,
             diff: main,
             divider: None,
+            split_row: None,
         };
     }
     // Keep at least one column for the diff pane.
     let w = w.min(main.width.saturating_sub(1).max(1));
     let commit_h = main.height.min(COMMIT_HEIGHT);
+    let below = main.height - commit_h;
+    let (changes_h, history_h) = sidebar.split_heights(below);
     let commit = Rect::new(main.x, main.y, w, commit_h);
-    let changes = Rect::new(main.x, main.y + commit_h, w, main.height - commit_h);
+    let changes = Rect::new(main.x, main.y + commit_h, w, changes_h);
+    let history = Rect::new(main.x, changes.y + changes_h, w, history_h);
     let diff = Rect::new(main.x + w, main.y, main.width - w, main.height);
     PanelRects {
         commit: Some(commit),
         changes: Some(changes),
+        history: Some(history),
         diff,
         divider: Some((main.x + w - 1, main.x + w)),
+        split_row: Some(history.y),
     }
 }
 
@@ -229,19 +310,74 @@ mod tests {
         let main = Rect::new(0, 0, 100, 20);
         assert_eq!(s.width_for(100), 0);
         let pr = compute(main, &s);
-        assert!(pr.commit.is_none() && pr.changes.is_none() && pr.divider.is_none());
+        assert!(
+            pr.commit.is_none()
+                && pr.changes.is_none()
+                && pr.history.is_none()
+                && pr.divider.is_none()
+                && pr.split_row.is_none()
+        );
         assert_eq!(pr.diff, main);
     }
 
     #[test]
-    fn compute_splits_sidebar_commit_and_changes() {
+    fn compute_splits_sidebar_into_three_panels() {
         let s = visible();
-        let main = Rect::new(0, 0, 100, 20);
+        let main = Rect::new(0, 0, 100, 24);
         let pr = compute(main, &s);
+        // 20 rows below the commit box: history gets 45% = 9.
         assert_eq!(pr.commit, Some(Rect::new(0, 0, 35, 4)));
-        assert_eq!(pr.changes, Some(Rect::new(0, 4, 35, 16)));
-        assert_eq!(pr.diff, Rect::new(35, 0, 65, 20));
+        assert_eq!(pr.changes, Some(Rect::new(0, 4, 35, 11)));
+        assert_eq!(pr.history, Some(Rect::new(0, 15, 35, 9)));
+        assert_eq!(pr.diff, Rect::new(35, 0, 65, 24));
         assert_eq!(pr.divider, Some((34, 35)));
+        assert_eq!(pr.split_row, Some(15));
+    }
+
+    #[test]
+    fn split_clamps_both_panels_to_four_rows() {
+        let mut s = visible();
+        let main = Rect::new(0, 0, 100, 16); // below = 12
+        s.history_height = Some(11); // would leave changes = 1
+        let pr = compute(main, &s);
+        // clamped: history <= 12-4 = 8
+        assert_eq!(pr.changes.unwrap().height, 4);
+        assert_eq!(pr.history.unwrap().height, 8);
+        // Tiny space: even split.
+        let main = Rect::new(0, 0, 100, 10); // below = 6
+        let pr = compute(main, &s);
+        assert_eq!(pr.changes.unwrap().height, 3);
+        assert_eq!(pr.history.unwrap().height, 3);
+    }
+
+    #[test]
+    fn drag_on_split_row_resizes_history() {
+        let mut s = visible();
+        let main = Rect::new(0, 0, 100, 24);
+        // split_row = 15 (see compute test); press on it inside the sidebar.
+        assert!(s.on_mouse(
+            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 15),
+            main
+        ));
+        assert!(s.is_dragging());
+        // Drag up to row 10: history_height = bottom(24) - 10 = 14.
+        assert!(s.on_mouse(
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 10, 10),
+            main
+        ));
+        assert!(s.on_mouse(&mouse(MouseEventKind::Up(MouseButton::Left), 10, 10), main));
+        let pr = compute(main, &s);
+        assert_eq!(pr.history.unwrap().height, 14);
+        assert_eq!(pr.changes.unwrap().height, 6);
+        // Down off the split row is not consumed.
+        let mut s2 = visible();
+        assert!(!s2.on_mouse(
+            &mouse(MouseEventKind::Down(MouseButton::Left), 10, 14),
+            main
+        ));
+        // Hover on the split row marks the divider active.
+        assert!(!s2.on_mouse(&mouse(MouseEventKind::Moved, 10, 15), main));
+        assert!(s2.divider_active());
     }
 
     #[test]
