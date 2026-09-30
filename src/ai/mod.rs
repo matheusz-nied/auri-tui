@@ -604,7 +604,7 @@ mod tests {
         fn missing_program_errors_on_start() {
             let mut r = ProcessRunner::default();
             let cmd = AiCommand {
-                program: "tide-definitely-not-installed".to_string(),
+                program: "auri-definitely-not-installed".to_string(),
                 args: vec![],
                 cwd: PathBuf::from("/tmp"),
                 timeout: Duration::from_secs(1),

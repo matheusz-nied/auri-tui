@@ -48,6 +48,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "auri-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ratatui",
+ "serde",
+ "syntect",
+ "tempfile",
+ "toml",
+ "two-face",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1430,19 +1445,6 @@ dependencies = [
  "rustix",
  "signal-hook",
  "windows-sys",
-]
-
-[[package]]
-name = "terminal-ide"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ratatui",
- "serde",
- "syntect",
- "tempfile",
- "toml",
- "two-face",
 ]
 
 [[package]]

@@ -1,7 +1,8 @@
 //! `GitBackend` implementation that shells out to the `git` binary.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{bail, Context, Result};
 
@@ -10,6 +11,30 @@ use super::{Commit, CommitFile, DiffDoc, FileChange, GitBackend, Section};
 
 /// Context size for diffs: effectively the whole file, like VS Code.
 const FULL_CONTEXT: &str = "-U100000";
+
+/// Hooks `git commit` runs; any of them may prompt on the terminal.
+const COMMIT_HOOKS: [&str; 4] = [
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+];
+
+/// A file git would run as a hook.
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = path.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
 
 /// Talks to git by spawning the `git` CLI in a fixed repository root.
 pub struct CliGit {
@@ -33,6 +58,29 @@ impl CliGit {
             .args(args)
             .output()
             .context("failed to spawn git")?;
+        Self::check(args, ok_codes, output)
+    }
+
+    /// `run` with `input` written to git's stdin.
+    fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> Result<Output> {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(&self.root)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to spawn git")?;
+        // Dropping the handle after the write closes git's stdin.
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input).context("writing to git")?;
+        }
+        let output = child.wait_with_output().context("waiting for git")?;
+        Self::check(args, &[], output)
+    }
+
+    fn check(args: &[&str], ok_codes: &[i32], output: Output) -> Result<Output> {
         let ok = output.status.success()
             || output
                 .status
@@ -100,9 +148,24 @@ impl GitBackend for CliGit {
                 ],
                 &[],
             )?,
+            // The index holds the conflict stages, so a plain `diff` would be
+            // a combined (`--cc`) diff; show the working file (conflict
+            // markers included) against HEAD instead.
+            Section::Conflicted if self.head()?.is_some() => self.run(
+                &[
+                    "diff",
+                    "HEAD",
+                    "--no-color",
+                    "--no-ext-diff",
+                    FULL_CONTEXT,
+                    "--",
+                    &file.path,
+                ],
+                &[],
+            )?,
             // `diff --no-index` exits 1 when the files differ — that is the
             // normal case, not an error.
-            Section::Untracked => self.run(
+            Section::Untracked | Section::Conflicted => self.run(
                 &[
                     "diff",
                     "--no-index",
@@ -146,13 +209,42 @@ impl GitBackend for CliGit {
                 // branches too since no HEAD lookup is needed.
                 self.run(&["restore", "--worktree", "--", &file.path], &[])?;
             }
-            Section::Staged => bail!("discard is only for unstaged changes"),
+            Section::Staged | Section::Conflicted => {
+                bail!("discard is only for unstaged changes")
+            }
         }
         Ok(())
     }
 
     fn stage_all(&self) -> Result<()> {
-        self.run(&["add", "-A"], &[])?;
+        let status = self.status()?;
+        if !status.iter().any(|f| f.section == Section::Conflicted) {
+            self.run(&["add", "-A"], &[])?;
+            return Ok(());
+        }
+        // `add -A` stages unmerged paths even when a pathspec excludes
+        // them, so name every other changed path explicitly (NUL-separated
+        // on stdin: no argv length limit, no pathspec magic).
+        let mut input = Vec::new();
+        for f in status
+            .iter()
+            .filter(|f| matches!(f.section, Section::Unstaged | Section::Untracked))
+        {
+            input.extend_from_slice(f.path.as_bytes());
+            input.push(0);
+        }
+        if !input.is_empty() {
+            self.run_with_stdin(
+                &[
+                    "--literal-pathspecs",
+                    "add",
+                    "-A",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                ],
+                &input,
+            )?;
+        }
         Ok(())
     }
 
@@ -171,6 +263,17 @@ impl GitBackend for CliGit {
     fn commit(&self, message: &str) -> Result<()> {
         self.run(&["commit", "-m", message], &[])?;
         Ok(())
+    }
+
+    fn commit_may_prompt(&self) -> bool {
+        let signs = self
+            .run(&["config", "--bool", "commit.gpgsign"], &[1])
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true");
+        // Relative to the root (`-C`), or absolute (`core.hooksPath`).
+        let hooks = self
+            .run(&["rev-parse", "--git-path", "hooks"], &[])
+            .map(|o| self.root.join(String::from_utf8_lossy(&o.stdout).trim()));
+        signs || hooks.is_ok_and(|dir| COMMIT_HOOKS.iter().any(|h| is_executable(&dir.join(h))))
     }
 
     fn branch(&self) -> Result<String> {
@@ -266,8 +369,8 @@ impl GitBackend for CliGit {
     }
 }
 
-/// Resolve the toplevel of the repo containing `path`, or `None` if `path` is
-/// not inside a git repository.
+/// Resolve the toplevel of the repo containing `path`. Errors when `path` is
+/// not inside a git repository (or git can't be spawned).
 pub fn resolve_toplevel(path: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .arg("-C")

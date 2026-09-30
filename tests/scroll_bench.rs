@@ -10,11 +10,11 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use terminal_ide::action::Action;
-use terminal_ide::component::Component;
-use terminal_ide::components::diff_view::DiffView;
-use terminal_ide::git::cli::CliGit;
-use terminal_ide::git::{
+use auri_tui::action::Action;
+use auri_tui::component::Component;
+use auri_tui::components::diff_view::DiffView;
+use auri_tui::git::cli::CliGit;
+use auri_tui::git::{
     CellKind, DiffCell, DiffDoc, DiffRow, FileChange, GitBackend, RowKind, Section,
 };
 

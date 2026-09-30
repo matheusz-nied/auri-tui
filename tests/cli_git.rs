@@ -1,9 +1,9 @@
 use std::fs;
 use std::process::Command;
 
+use auri_tui::git::cli::CliGit;
+use auri_tui::git::{GitBackend, Section};
 use tempfile::TempDir;
-use terminal_ide::git::cli::CliGit;
-use terminal_ide::git::{GitBackend, Section};
 
 fn git(dir: &TempDir, args: &[&str]) {
     let status = Command::new("git")
@@ -21,8 +21,8 @@ fn make_repo() -> TempDir {
     let dir = TempDir::new().unwrap();
     git(&dir, &["init"]);
     // Local-only identity so the test never touches global config.
-    git(&dir, &["config", "user.name", "Tide Test"]);
-    git(&dir, &["config", "user.email", "tide@example.com"]);
+    git(&dir, &["config", "user.name", "Auri Test"]);
+    git(&dir, &["config", "user.email", "auri@example.com"]);
     fs::write(dir.path().join("tracked.txt"), "hello\n").unwrap();
     git(&dir, &["add", "tracked.txt"]);
     git(&dir, &["commit", "-m", "initial"]);
@@ -106,7 +106,7 @@ fn diff_of_untracked_file_is_all_added() {
     for row in &doc.rows {
         assert!(row.left.is_none(), "untracked diff has no old side");
         let right = row.right.as_ref().expect("new side present");
-        assert_eq!(right.kind, terminal_ide::git::CellKind::Added);
+        assert_eq!(right.kind, auri_tui::git::CellKind::Added);
     }
 }
 
@@ -114,8 +114,8 @@ fn diff_of_untracked_file_is_all_added() {
 fn make_unborn_repo() -> TempDir {
     let dir = TempDir::new().unwrap();
     git(&dir, &["init"]);
-    git(&dir, &["config", "user.name", "Tide Test"]);
-    git(&dir, &["config", "user.email", "tide@example.com"]);
+    git(&dir, &["config", "user.name", "Auri Test"]);
+    git(&dir, &["config", "user.email", "auri@example.com"]);
     fs::write(dir.path().join("new.txt"), "hello\n").unwrap();
     dir
 }
@@ -165,10 +165,10 @@ fn commit_works_on_unborn_repo() {
 }
 
 fn find(
-    status: &[terminal_ide::git::FileChange],
+    status: &[auri_tui::git::FileChange],
     path: &str,
     section: Section,
-) -> terminal_ide::git::FileChange {
+) -> auri_tui::git::FileChange {
     status
         .iter()
         .find(|f| f.path == path && f.section == section)
@@ -276,8 +276,8 @@ fn branch_returns_current_name() {
 fn make_history_repo() -> TempDir {
     let dir = TempDir::new().unwrap();
     git(&dir, &["init"]);
-    git(&dir, &["config", "user.name", "Tide Test"]);
-    git(&dir, &["config", "user.email", "tide@example.com"]);
+    git(&dir, &["config", "user.name", "Auri Test"]);
+    git(&dir, &["config", "user.email", "auri@example.com"]);
     for (name, content) in [
         ("first.txt", "one\n"),
         // Long enough that a one-line addition keeps >50% similarity,
@@ -311,7 +311,7 @@ fn log_is_newest_first_and_pages() {
     assert_eq!(log[0].subject, "third");
     assert_eq!(log[1].subject, "second");
     assert_eq!(log[2].subject, "first");
-    assert_eq!(log[0].author, "Tide Test");
+    assert_eq!(log[0].author, "Auri Test");
     assert!(log[0].time > 0);
     assert!(log[0].short.len() >= 7 && log[0].hash.starts_with(&log[0].short[..7]));
 
@@ -339,7 +339,7 @@ fn root_commit_files_are_all_added_and_diff_is_all_added() {
     assert!(!doc.rows.is_empty());
     for row in &doc.rows {
         let right = row.right.as_ref().expect("added side present");
-        assert_eq!(right.kind, terminal_ide::git::CellKind::Added);
+        assert_eq!(right.kind, auri_tui::git::CellKind::Added);
     }
 }
 
@@ -375,9 +375,12 @@ fn commit_files_report_modify_and_rename() {
     // The rename diff shows the file content under the new path.
     let doc = git.commit_diff(&head.hash, renamed).unwrap();
     assert_eq!(doc.path, "renamed.txt");
-    assert!(doc.rows.iter().any(|r| r.right.as_ref().is_some_and(
-        |c| c.text.contains("renamed") && c.kind == terminal_ide::git::CellKind::Added
-    )));
+    assert!(doc
+        .rows
+        .iter()
+        .any(|r| r.right.as_ref().is_some_and(
+            |c| c.text.contains("renamed") && c.kind == auri_tui::git::CellKind::Added
+        )));
 }
 
 #[test]
@@ -403,4 +406,87 @@ fn merge_commit_files_diff_against_first_parent() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "feature.txt");
     assert_eq!(files[0].code, 'A');
+}
+
+/// A repo mid-merge: `tracked.txt` conflicts, `other.txt` is a clean
+/// unstaged edit.
+fn make_conflicted_repo() -> TempDir {
+    let dir = make_repo();
+    fs::remove_file(dir.path().join("untracked.txt")).unwrap();
+    git(&dir, &["commit", "-am", "base"]);
+    git(&dir, &["checkout", "-q", "-b", "theirs"]);
+    fs::write(dir.path().join("tracked.txt"), "theirs\n").unwrap();
+    git(&dir, &["commit", "-qam", "theirs"]);
+    git(&dir, &["checkout", "-q", "-"]);
+    fs::write(dir.path().join("tracked.txt"), "ours\n").unwrap();
+    git(&dir, &["commit", "-qam", "ours"]);
+    // Expected to fail with a conflict.
+    let merge = Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["merge", "-q", "theirs"])
+        .output()
+        .unwrap();
+    assert!(!merge.status.success());
+    fs::write(dir.path().join("other.txt"), "clean edit\n").unwrap();
+    dir
+}
+
+#[test]
+fn conflicts_are_listed_once_and_diffed_against_head() {
+    let dir = make_conflicted_repo();
+    let git = CliGit::new(dir.path());
+    let status = git.status().unwrap();
+    let entries: Vec<_> = status.iter().filter(|f| f.path == "tracked.txt").collect();
+    assert_eq!(entries.len(), 1, "{status:?}");
+    assert_eq!(entries[0].section, Section::Conflicted);
+    assert_eq!(entries[0].code, '!');
+
+    let doc = git.diff(entries[0]).unwrap();
+    let added: Vec<_> = doc
+        .rows
+        .iter()
+        .filter_map(|r| r.right.as_ref())
+        .map(|c| c.text.as_str())
+        .collect();
+    assert!(added.iter().any(|t| t.starts_with("<<<<<<<")), "{added:?}");
+    assert!(added.contains(&"theirs"), "{added:?}");
+    assert!(git.discard(entries[0]).is_err());
+}
+
+#[test]
+fn stage_all_skips_conflicts_and_stage_resolves_one() {
+    let dir = make_conflicted_repo();
+    let git = CliGit::new(dir.path());
+    git.stage_all().unwrap();
+    let status = git.status().unwrap();
+    assert_eq!(find(&status, "tracked.txt", Section::Conflicted).code, '!');
+    // The clean (untracked) edit was staged.
+    assert_eq!(find(&status, "other.txt", Section::Staged).code, 'A');
+    git.stage("tracked.txt").unwrap();
+    let status = git.status().unwrap();
+    assert!(status.iter().all(|f| f.section != Section::Conflicted));
+    assert_eq!(find(&status, "tracked.txt", Section::Staged).code, 'M');
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_may_prompt_with_signing_or_commit_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = make_repo();
+    // Local config overrides whatever the machine's global config says.
+    git(&dir, &["config", "commit.gpgsign", "false"]);
+    let git_ = CliGit::new(dir.path());
+    assert!(!git_.commit_may_prompt());
+
+    // A non-executable hook is not run by git.
+    let hook = dir.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+    assert!(!git_.commit_may_prompt());
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(git_.commit_may_prompt());
+
+    fs::remove_file(&hook).unwrap();
+    git(&dir, &["config", "commit.gpgsign", "true"]);
+    assert!(git_.commit_may_prompt());
 }

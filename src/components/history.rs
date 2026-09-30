@@ -11,6 +11,7 @@ use ratatui::Frame;
 use crate::action::{Action, PanelId};
 use crate::component::Component;
 use crate::git::{Commit, CommitFile};
+use crate::text;
 
 use super::{border_style, file_row_line, selection_style, SCROLL_LINES};
 
@@ -254,28 +255,20 @@ fn commit_row_line(
     style: Style,
 ) -> Line<'static> {
     let date = relative_time(commit.time, now);
-    let date_w = date.chars().count();
+    let date_w = text::width(&date);
     let avail = width.saturating_sub(date_w + 1);
-    let author = format!(" {}", commit.author);
-    let author_w = author.chars().count();
-    // ` ● ` marker (3 cols) + subject + dim author.
+    // ` ● ` marker (3 cols) + subject + dim author; the author is cut too
+    // when it alone would leave no room for the subject.
+    let author = text::ellipsize(&format!(" {}", commit.author), avail.saturating_sub(3) / 2);
+    let author_w = text::width(&author);
     let subj_budget = avail.saturating_sub(3 + author_w);
-    let mut subject: String = commit.subject.chars().take(subj_budget).collect();
-    if commit.subject.chars().count() > subj_budget {
-        subject = format!(
-            "{}…",
-            subject
-                .chars()
-                .take(subj_budget.saturating_sub(1))
-                .collect::<String>()
-        );
-    }
+    let subject = text::ellipsize(&commit.subject, subj_budget);
     let subj_style = if expanded {
         style.add_modifier(Modifier::BOLD)
     } else {
         style
     };
-    let used = 3 + subject.chars().count() + author_w;
+    let used = 3 + text::width(&subject) + author_w;
     let pad = avail.saturating_sub(used);
     Line::from(vec![
         Span::styled(" ● ", style.fg(Color::Cyan)),
@@ -689,5 +682,25 @@ mod tests {
         load(&mut h, 3);
         assert!(h.expanded.contains("hash0000"));
         assert!(h.rows.iter().any(|r| matches!(r, Row::File(0, 0))));
+    }
+
+    #[test]
+    fn row_line_fits_wide_subjects_and_long_authors() {
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let mut c = commit(0);
+        c.subject = "修正: 日本語のコミットメッセージ".to_string();
+        c.author = "Someone With A Very Long Name".to_string();
+        let now = c.time + 3 * 86_400;
+        for width in [20, 30, 45] {
+            let line = commit_row_line(&c, false, now, width, Style::default());
+            let t = text(&line);
+            assert_eq!(crate::text::width(&t), width, "{t:?}");
+            assert!(t.ends_with("3d"), "{t:?}");
+        }
     }
 }

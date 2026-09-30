@@ -13,6 +13,7 @@ use crate::fs::tree::{Tree, TreeRow};
 use crate::fs::{parent, EntryKind};
 use crate::git::{FileChange, Section};
 use crate::icons::{dir_icon, file_icon, IconStyle};
+use crate::text;
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, code_color, selection_style, SCROLL_LINES};
@@ -183,7 +184,10 @@ pub fn decorations(files: &[FileChange]) -> HashMap<String, char> {
         while !dir.is_empty() {
             out.entry(dir.to_string())
                 .and_modify(|c| {
-                    if *c != code {
+                    // A conflict anywhere below wins; other mixes read `M`.
+                    if *c == '!' || code == '!' {
+                        *c = '!';
+                    } else if *c != code {
                         *c = 'M';
                     }
                 })
@@ -215,23 +219,13 @@ fn tree_row_line(
         EntryKind::File => file_icon(icons, &row.name),
     };
     let indent = format!(" {}{chevron}", "  ".repeat(row.depth));
-    let indent: String = indent.chars().take(width).collect();
-    let indent_w = indent.chars().count();
-    let icon_text: String = format!("{} ", icon.glyph)
-        .chars()
-        .take(width - indent_w)
-        .collect();
-    let prefix_w = indent_w + icon_text.chars().count();
+    let indent = text::truncate(&indent, width);
+    let indent_w = text::width(&indent);
+    let icon_text = text::truncate(&format!("{} ", icon.glyph), width - indent_w);
+    let prefix_w = indent_w + text::width(&icon_text);
     // Name budget: minus the decoration column and one space before it.
     let budget = width.saturating_sub(prefix_w + 2);
-    let name_len = row.name.chars().count();
-    let name: String = if name_len > budget && budget > 0 {
-        let mut s: String = row.name.chars().take(budget - 1).collect();
-        s.push('…');
-        s
-    } else {
-        row.name.chars().take(budget).collect()
-    };
+    let name = text::ellipsize(&row.name, budget);
     let name_style = match deco {
         Some(c) => style.fg(code_color(c)),
         None => style,
@@ -241,7 +235,7 @@ fn tree_row_line(
         (Some(c), EntryKind::File) => c.to_string(),
         (None, _) => String::new(),
     };
-    let used = prefix_w + name.chars().count() + mark.chars().count();
+    let used = prefix_w + text::width(&name) + text::width(&mark);
     let pad = width.saturating_sub(used);
     Line::from(vec![
         Span::styled(indent, style.fg(Color::DarkGray)),
@@ -555,6 +549,14 @@ mod tests {
         assert_eq!(d["src"], 'M', "mixed changes aggregate to M");
         assert_eq!(d["docs"], 'U');
         assert!(!d.contains_key(""));
+
+        let d = decorations(&[
+            fc("src/a.rs", Section::Unstaged, 'M'),
+            fc("src/b.rs", Section::Conflicted, '!'),
+            fc("src/c.rs", Section::Untracked, 'U'),
+        ]);
+        assert_eq!(d["src/b.rs"], '!');
+        assert_eq!(d["src"], '!', "a conflict below marks the folder");
     }
 
     fn row(path: &str, depth: usize, kind: EntryKind, expanded: bool) -> TreeRow {
@@ -577,6 +579,14 @@ mod tests {
         let line = tree_row_line(&r, Some('M'), IconStyle::Text, 19, Style::default());
         assert_eq!(text(&line), "     rs very_lon… M");
         assert_eq!(text(&line).chars().count(), 19);
+    }
+
+    #[test]
+    fn row_line_measures_wide_names_in_columns() {
+        let r = row("docs/日本語のファイル名.md", 1, EntryKind::File, false);
+        let line = tree_row_line(&r, Some('A'), IconStyle::Text, 19, Style::default());
+        assert_eq!(crate::text::width(&text(&line)), 19);
+        assert!(text(&line).ends_with("… A"), "{:?}", text(&line));
     }
 
     #[test]

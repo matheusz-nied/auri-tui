@@ -16,6 +16,8 @@ use syntect::highlighting::{FontStyle, Theme};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use two_face::theme::EmbeddedThemeName;
 
+use crate::text;
+
 const THEME: EmbeddedThemeName = EmbeddedThemeName::OneHalfDark;
 /// Lines past this are left plain — highlighting is linear in the distance
 /// scrolled and a jump to the end of a huge file would freeze the UI.
@@ -119,9 +121,7 @@ impl Highlighter {
     pub fn spans(&self, i: usize, raw: &str, skip: usize, take: usize) -> Vec<Span<'static>> {
         match self.lines.get(i) {
             Some(chunks) => crop(chunks, skip, take),
-            None => vec![Span::raw(
-                raw.chars().skip(skip).take(take).collect::<String>(),
-            )],
+            None => vec![Span::raw(text::slice(raw, skip, take))],
         }
     }
 }
@@ -140,23 +140,25 @@ fn convert(style: syntect::highlighting::Style) -> Style {
     out
 }
 
-/// Cut `[skip, skip + take)` (in chars) out of a run of chunks.
+/// Cut the columns `[skip, skip + take)` out of a run of chunks (a wide
+/// character cut by an edge becomes spaces, see `text::slice`).
 fn crop(chunks: &[Chunk], skip: usize, take: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    let (mut skip, mut take) = (skip, take);
+    let end = skip + take;
+    let mut col = 0;
     for (style, text) in chunks {
-        if take == 0 {
+        if col >= end {
             break;
         }
-        let n = text.chars().count();
-        if skip >= n {
-            skip -= n;
-            continue;
+        let w = text::width(text);
+        if col + w > skip {
+            let from = skip.saturating_sub(col);
+            let piece = text::slice(text, from, end - col.max(skip));
+            if !piece.is_empty() {
+                out.push(Span::styled(piece, *style));
+            }
         }
-        let piece: String = text.chars().skip(skip).take(take).collect();
-        take -= piece.chars().count();
-        skip = 0;
-        out.push(Span::styled(piece, *style));
+        col += w;
     }
     out
 }
@@ -246,5 +248,16 @@ mod tests {
         assert_eq!(text(&crop(&chunks, 3, 3)), "déf");
         assert_eq!(text(&crop(&chunks, 8, 10)), "i");
         assert!(crop(&chunks, 20, 5).is_empty());
+    }
+
+    #[test]
+    fn crop_counts_wide_chars_as_two_columns() {
+        let s = Style::default();
+        let chunks = vec![(s, "a日".to_string()), (s, "本b".to_string())];
+        assert_eq!(text(&crop(&chunks, 0, 6)), "a日本b");
+        assert_eq!(text(&crop(&chunks, 1, 4)), "日本");
+        // Half of 日 and half of 本 fall outside: padded with spaces.
+        assert_eq!(text(&crop(&chunks, 2, 4)), " 本b");
+        assert_eq!(text(&crop(&chunks, 0, 4)), "a日 ");
     }
 }

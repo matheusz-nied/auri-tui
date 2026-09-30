@@ -1,4 +1,4 @@
-# terminal-ide (`tide`)
+# auri (`auri-tui`)
 
 A terminal IDE written in Rust with [ratatui]. Currently ships a VS Code–style
 git panel (a changes list, a side-by-side diff viewer, a commit message input
@@ -31,6 +31,9 @@ components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                (modal overlay example)
 highlight.rs   syntax highlighting (syntect + two-face = bat's grammars,
                embedded, OneHalfDark): pure, incremental `Highlighter`
+text.rs        display width in terminal columns (CJK/emoji = 2): `width`,
+               `slice`, `truncate`, `ellipsize` — use these, never
+               `chars().count()`, for anything drawn
 icons.rs       explorer file-type icons: pure name -> (glyph, color);
                `text` badges (any font) or `nerd` glyphs (Nerd Font)
 layout.rs      sidebar geometry: view (Explorer/Source Control), width/
@@ -47,6 +50,19 @@ Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `Box<dyn FsBackend>` → results (`StatusLoaded`, `DiffLoaded`,
 `HistoryLoaded`, `CommitFilesLoaded`, `DirLoaded`, `FileLoaded`,
 `FileReloaded`, `Error`) are broadcast to every component's `update`.
+
+Status sections: `Conflicted` (unmerged, code `!`, one entry, listed
+first as "Merge Changes"; staging marks it resolved, no discard, its diff
+is worktree vs HEAD), `Staged`, `Unstaged`, `Untracked` (code `U`).
+`stage_all` never stages conflicted paths.
+
+`git commit` runs with the terminal handed over (`TerminalHandoff`:
+`release` leaves raw mode/alt screen, `reclaim` re-enters and forces a full
+redraw) when `commit_may_prompt()` — `commit.gpgsign` or an executable
+commit hook — so pinentry/interactive hooks get a usable tty.
+
+Status-bar messages (`App::notify`) clear on the next key press or after
+`MESSAGE_TTL` (errors: `ERROR_TTL`).
 
 The diff pane's contents are described by `git::DiffSource`:
 `Working(FileChange)` is reloaded on status ticks and cleared when the file
@@ -132,10 +148,10 @@ main pane (diff or file).
 
 ### Preferences — `prefs/mod.rs`
 
-`Preferences` persists to `$TIDE_CONFIG_DIR/preferences.toml` when
-`TIDE_CONFIG_DIR` is set (test/override hook), else
-`$XDG_CONFIG_HOME/tide/preferences.toml`, else
-`~/.config/tide/preferences.toml` (that path on macOS too — no `dirs`
+`Preferences` persists to `$AURI_CONFIG_DIR/preferences.toml` when
+`AURI_CONFIG_DIR` is set (test/override hook), else
+`$XDG_CONFIG_HOME/auri/preferences.toml`, else
+`~/.config/auri/preferences.toml` (that path on macOS too — no `dirs`
 crate). Saves are atomic (tmp file + rename). A missing file loads defaults;
 an *unparseable* file disables saving for the session and shows an error —
 it is never overwritten.
@@ -159,7 +175,7 @@ free. Tests must never touch the real config dir — use `MemoryStore` or a
 ## Commands
 
 ```sh
-cargo run -- [repo]                              # run (defaults to cwd); binary is `tide`
+cargo run -- [repo]                              # run (defaults to cwd); binary is `auri`
 cargo test                                       # unit + integration tests
 cargo clippy --all-targets -- -D warnings        # lint
 cargo fmt --check                                # format check (cargo fmt to fix)

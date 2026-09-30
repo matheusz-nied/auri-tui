@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>auri — git diffs in your terminal</title>
+<meta name="description" content="auri is a small terminal UI to browse files and git diffs side by side. Explorer, source control, history — in your terminal.">
+<meta property="og:title" content="auri — git diffs in your terminal">
+<meta property="og:description" content="Browse files and git diffs side by side, right in your terminal.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://matheusz-nied.github.io/auri-tui/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='12' cy='16' r='7' fill='%23f2b84b'/%3E%3Ccircle cx='23' cy='16' r='4' fill='%236ea8ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0d14;
+    --bg-2: #10151f;
+    --panel: #151b27;
+    --line: #232b3a;
+    --text: #e6e9f0;
+    --muted: #8b93a7;
+    --gold: #f2b84b;
+    --blue: #6ea8ff;
+    --add-bg: rgba(80, 200, 120, .13);
+    --add-fg: #7fd99a;
+    --del-bg: rgba(255, 99, 99, .13);
+    --del-fg: #ff8a8a;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+  /* starfield */
+  .sky { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(600px 400px at 18% -5%, rgba(242,184,75,.10), transparent 70%),
+      radial-gradient(600px 400px at 85% 0%, rgba(110,168,255,.10), transparent 70%),
+      var(--bg); }
+  .sky i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #fff; opacity: .5; }
+
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  .logo { display: flex; align-items: center; gap: 10px; font: 700 20px var(--mono); text-decoration: none; letter-spacing: -.02em; }
+  .logo svg { width: 30px; height: 30px; }
+  .nav-links { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  .nav-links a { text-decoration: none; }
+  .nav-links a:hover { color: var(--text); }
+
+  header.hero { text-align: center; padding: 64px 0 40px; }
+  .badge { display: inline-block; font: 500 12px var(--mono); color: var(--gold);
+    border: 1px solid rgba(242,184,75,.35); border-radius: 999px; padding: 4px 12px; margin-bottom: 22px; }
+  h1 { font-size: clamp(38px, 7vw, 68px); line-height: 1.05; letter-spacing: -.035em; margin: 0 0 18px; font-weight: 700; }
+  h1 .g { color: var(--gold); } h1 .b { color: var(--blue); }
+  .lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 620px; margin: 0 auto 34px; }
+
+  /* install box */
+  .install { max-width: 620px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; text-align: left; overflow: hidden; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tabs button { flex: 0 0 auto; background: none; border: 0; color: var(--muted); font: 500 13px var(--sans);
+    padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tabs button[aria-selected="true"] { color: var(--text); border-color: var(--gold); }
+  .cmd { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+  .cmd code { flex: 1; font: 14px var(--mono); white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .cmd code::before { content: "$ "; color: var(--muted); }
+  .copy { flex: none; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    font: 500 12px var(--sans); padding: 6px 12px; cursor: pointer; }
+  .copy:hover { border-color: var(--gold); }
+
+  /* terminal mock */
+  .term { margin: 56px auto 0; max-width: 1000px; background: #0d1119; border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02); overflow: hidden; font: 13px/1.55 var(--mono); }
+  .term-bar { display: flex; gap: 7px; padding: 11px 14px; background: #121722; border-bottom: 1px solid var(--line); }
+  .term-bar span { width: 11px; height: 11px; border-radius: 50%; background: #2a3140; }
+  .term-body { display: grid; grid-template-columns: 230px 1fr; min-height: 340px; }
+  .side { border-right: 1px solid var(--line); padding: 8px 0; }
+  .side .tabbar { display: flex; gap: 14px; padding: 0 12px 8px; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+  .side .tabbar .on { color: var(--gold); }
+  .side .h { color: var(--muted); padding: 4px 12px; font-size: 11px; letter-spacing: .08em; }
+  .side .row { display: flex; justify-content: space-between; padding: 1px 12px; white-space: nowrap; }
+  .side .row.sel { background: rgba(110,168,255,.14); }
+  .M { color: var(--gold); } .A { color: var(--add-fg); } .D { color: var(--del-fg); }
+  .diff { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; }
+  .diff > div { overflow: hidden; }
+  .diff > div + div { border-left: 1px solid var(--line); }
+  .ln { display: flex; white-space: pre; }
+  .ln b { font-weight: 400; color: #4a5366; width: 34px; text-align: right; padding-right: 10px; flex: none; }
+  .ln.add { background: var(--add-bg); } .ln.del { background: var(--del-bg); }
+  .kw { color: #c678dd; } .fn { color: #61afef; } .st { color: #98c379; } .cm { color: #5c6370; font-style: italic; } .ty { color: #e5c07b; }
+
+  section { padding: 90px 0 0; }
+  h2 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -.03em; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 40px; max-width: 560px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
+  .card h3 { margin: 12px 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .ico { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font: 600 15px var(--mono); }
+  .ico.g { background: rgba(242,184,75,.14); color: var(--gold); }
+  .ico.b { background: rgba(110,168,255,.14); color: var(--blue); }
+
+  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 32px; }
+  .key { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); gap: 12px; }
+  .key span { color: var(--muted); }
+  kbd { font: 12px var(--mono); background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+
+  .story { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: center; }
+  .story svg { width: 100%; max-width: 380px; display: block; margin: 0 auto; }
+  .story p { color: var(--muted); }
+  .story em { color: var(--text); font-style: normal; }
+
+  .cta { text-align: center; padding: 100px 0 40px; }
+  .btn { display: inline-block; background: var(--gold); color: #1a1406; font-weight: 600; text-decoration: none;
+    padding: 12px 22px; border-radius: 10px; margin: 6px; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .btn.ghost:hover { border-color: var(--blue); }
+  footer { color: var(--muted); font-size: 14px; text-align: center; padding: 40px 0 50px; border-top: 1px solid var(--line); margin-top: 60px; }
+
+  @media (max-width: 760px) {
+    .nav-links a.hide-sm { display: none; }
+    header.hero { padding-top: 36px; }
+    .term-body { grid-template-columns: 1fr; }
+    .side { display: none; }
+    .diff > div + div { display: none; }
+    .story { grid-template-columns: 1fr; gap: 24px; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div class="sky" id="sky"></div>
+
+<div class="wrap">
+  <nav>
+    <a class="logo" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="12" cy="16" r="7" fill="#f2b84b"/><circle cx="23.5" cy="16" r="4" fill="#6ea8ff"/></svg>
+      auri
+    </a>
+    <div class="nav-links">
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#keys">Keys</a>
+      <a href="https://github.com/matheusz-nied/auri-tui">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="badge">v0.1.0 · macOS &amp; Linux</div>
+    <h1>See what <span class="g">changed</span>.<br>Right in your <span class="b">terminal</span>.</h1>
+    <p class="lead">auri is a small, fast terminal UI to browse your files and git diffs side by side. No editor, no browser — just open it and look.</p>
+
+    <div class="install">
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-cmd="brew install matheusz-nied/tap/auri">Homebrew</button>
+        <button role="tab" aria-selected="false" data-cmd="curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh">Shell</button>
+        <button role="tab" aria-selected="false" data-cmd="cargo install auri-tui">Cargo</button>
+      </div>
+      <div class="cmd">
+        <code id="cmd">brew install matheusz-nied/tap/auri</code>
+        <button class="copy" id="copy">Copy</button>
+      </div>
+    </div>
+
+    <div class="term" aria-label="auri showing a side-by-side diff">
+      <div class="term-bar"><span></span><span></span><span></span></div>
+      <div class="term-body">
+        <div class="side">
+          <div class="tabbar"><span>Explorer</span><span class="on">Source Control</span></div>
+          <div class="h">STAGED</div>
+          <div class="row"><span>README.md</span><span class="A">A</span></div>
+          <div class="h">CHANGES</div>
+          <div class="row sel"><span>src/orbit.rs</span><span class="M">M</span></div>
+          <div class="row"><span>src/star.rs</span><span class="M">M</span></div>
+          <div class="row"><span>legacy/old.rs</span><span class="D">D</span></div>
+          <div class="h">HISTORY</div>
+          <div class="row"><span class="M">a1f3c9e</span><span style="color:var(--muted)">feat: parallax</span></div>
+          <div class="row"><span class="M">7bd20e4</span><span style="color:var(--muted)">fix: epoch</span></div>
+        </div>
+        <div class="diff">
+          <div>
+<div class="ln"><b>1</b><span class="kw">use</span> crate::<span class="ty">Star</span>;</div>
+<div class="ln"><b>2</b></div>
+<div class="ln"><b>3</b><span class="cm">/// Distance in parsecs.</span></div>
+<div class="ln del"><b>4</b><span class="kw">pub fn</span> <span class="fn">distance</span>(p: <span class="ty">f64</span>) -&gt; <span class="ty">f64</span> {</div>
+<div class="ln del"><b>5</b>    <span class="ty">1.0</span> / p</div>
+<div class="ln"><b>6</b>}</div>
+<div class="ln"><b>7</b></div>
+<div class="ln"><b>8</b><span class="kw">pub fn</span> <span class="fn">name</span>(s: &amp;<span class="ty">Star</span>) -&gt; &amp;<span class="ty">str</span> {</div>
+<div class="ln del"><b>9</b>    <span class="st">"unknown"</span></div>
+<div class="ln"><b>10</b>}</div>
+<div class="ln"><b></b></div>
+<div class="ln"><b></b></div>
+          </div>
+          <div>
+<div class="ln"><b>1</b><span class="kw">use</span> crate::<span class="ty">Star</span>;</div>
+<div class="ln"><b>2</b></div>
+<div class="ln"><b>3</b><span class="cm">/// Distance in parsecs.</span></div>
+<div class="ln add"><b>4</b><span class="kw">pub fn</span> <span class="fn">distance</span>(arcsec: <span class="ty">f64</span>) -&gt; <span class="ty">Option</span>&lt;<span class="ty">f64</span>&gt; {</div>
+<div class="ln add"><b>5</b>    (arcsec &gt; <span class="ty">0.0</span>).<span class="fn">then</span>(|| <span class="ty">1.0</span> / arcsec)</div>
+<div class="ln"><b>6</b>}</div>
+<div class="ln"><b>7</b></div>
+<div class="ln"><b>8</b><span class="kw">pub fn</span> <span class="fn">name</span>(s: &amp;<span class="ty">Star</span>) -&gt; &amp;<span class="ty">str</span> {</div>
+<div class="ln add"><b>9</b>    &amp;s.name</div>
+<div class="ln"><b>10</b>}</div>
+<div class="ln"><b></b></div>
+<div class="ln"><b></b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section id="features">
+    <h2>Everything you need to read a repo</h2>
+    <p class="sub">And nothing you don't. auri isn't an editor — it's a place to look at your code and what changed in it.</p>
+    <div class="grid">
+      <div class="card"><div class="ico g">⇆</div><h3>Side-by-side diffs</h3><p>Old and new, next to each other, with syntax highlighting. Jump between changes with <kbd>n</kbd> / <kbd>N</kbd>.</p></div>
+      <div class="card"><div class="ico b">▤</div><h3>File explorer</h3><p>A lazy file tree with git status on every row and a highlighted, read-only file viewer.</p></div>
+      <div class="card"><div class="ico g">±</div><h3>Stage &amp; commit</h3><p>Stage, unstage and discard changes, write a message and commit — without leaving the view.</p></div>
+      <div class="card"><div class="ico b">◷</div><h3>History</h3><p>Browse past commits and open the diff of any file they touched.</p></div>
+      <div class="card"><div class="ico g">✦</div><h3>AI commit drafts</h3><p>Optional: <kbd>Ctrl-G</kbd> drafts a message from your staged diff with Codex CLI or opencode. It never commits for you.</p></div>
+      <div class="card"><div class="ico b">◐</div><h3>Keyboard or mouse</h3><p>Vim-style keys, clickable buttons and tabs, draggable dividers. Your layout is remembered.</p></div>
+    </div>
+  </section>
+
+  <section id="keys">
+    <h2>A handful of keys</h2>
+    <p class="sub">Run <kbd>auri</kbd> inside any git repository. <kbd>auri --help</kbd> prints the essentials.</p>
+    <div class="keys">
+      <div class="key"><span>Explorer</span><kbd>e</kbd></div>
+      <div class="key"><span>Source control</span><kbd>c</kbd></div>
+      <div class="key"><span>Focus the file / diff</span><kbd>2</kbd></div>
+      <div class="key"><span>Move</span><kbd>j</kbd> <kbd>k</kbd></div>
+      <div class="key"><span>Stage / unstage</span><kbd>space</kbd></div>
+      <div class="key"><span>Next change</span><kbd>n</kbd></div>
+      <div class="key"><span>Toggle sidebar</span><kbd>b</kbd></div>
+      <div class="key"><span>Resize sidebar</span><kbd>[</kbd> <kbd>]</kbd></div>
+      <div class="key"><span>Quit</span><kbd>q</kbd></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="story">
+      <svg viewBox="0 0 380 240" aria-label="Albireo: a gold star and a blue star">
+        <defs>
+          <radialGradient id="gold"><stop offset="0" stop-color="#fff4d6"/><stop offset=".35" stop-color="#f2b84b"/><stop offset="1" stop-color="#f2b84b" stop-opacity="0"/></radialGradient>
+          <radialGradient id="blue"><stop offset="0" stop-color="#eaf2ff"/><stop offset=".35" stop-color="#6ea8ff"/><stop offset="1" stop-color="#6ea8ff" stop-opacity="0"/></radialGradient>
+        </defs>
+        <circle cx="140" cy="120" r="90" fill="url(#gold)"/>
+        <circle cx="265" cy="118" r="55" fill="url(#blue)"/>
+      </svg>
+      <div>
+        <h2>Why “auri”?</h2>
+        <p><em>Auri</em> is Latin for <em>of gold</em>. Look at Albireo, in the constellation Cygnus, through a small telescope and one star becomes two: a golden one and a blue one, side by side.</p>
+        <p>Two views of the same spot, each showing what the other doesn't. That's what a diff is.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="cta">
+    <h2>Take a look.</h2>
+    <p class="sub" style="margin: 0 auto 26px">Free and open source, MIT licensed.</p>
+    <a class="btn" href="#">Install auri</a>
+    <a class="btn ghost" href="https://github.com/matheusz-nied/auri-tui">Star on GitHub</a>
+  </div>
+
+  <footer>
+    auri · MIT · <a href="https://github.com/matheusz-nied/auri-tui/releases">Releases</a> · <a href="https://github.com/matheusz-nied/auri-tui/blob/main/CHANGELOG.md">Changelog</a>
+  </footer>
+</div>
+
+<script>
+  // Install tabs + copy
+  const cmd = document.getElementById('cmd');
+  const tabs = document.querySelectorAll('.tabs button');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(o => o.setAttribute('aria-selected', o === t));
+    cmd.textContent = t.dataset.cmd;
+  }));
+  const copy = document.getElementById('copy');
+  copy.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(cmd.textContent); copy.textContent = 'Copied'; }
+    catch { copy.textContent = 'Select & copy'; }
+    setTimeout(() => copy.textContent = 'Copy', 1600);
+  });
+
+  // Sparse starfield
+  const sky = document.getElementById('sky');
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 90; i++) {
+    const s = document.createElement('i');
+    s.style.left = rnd() * 100 + '%';
+    s.style.top = rnd() * 100 + '%';
+    s.style.opacity = (0.15 + rnd() * 0.5).toFixed(2);
+    if (rnd() > 0.9) { s.style.width = s.style.height = '3px'; }
+    sky.appendChild(s);
+  }
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::fs::{FileDoc, MAX_FILE_BYTES};
 use crate::highlight::Highlighter;
+use crate::text;
 
 use super::{border_style, SCROLL_LINES};
 
@@ -46,12 +47,7 @@ impl FileView {
     /// `fresh` = a newly opened file (scroll to top); a reload of the same
     /// file keeps the position, clamped.
     fn set_doc(&mut self, doc: FileDoc, fresh: bool) {
-        self.max_width = doc
-            .lines
-            .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0);
+        self.max_width = doc.lines.iter().map(|l| text::width(l)).max().unwrap_or(0);
         if fresh {
             self.scroll_y = 0;
             self.scroll_x = 0;

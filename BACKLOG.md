@@ -5,28 +5,28 @@ Marque `[x]` ao resolver e referencie o commit/PR ao lado.
 
 ## Bugs e comportamento incorreto
 
-- [ ] **1. Ctrl+tecla insere texto no commit** — com o input focado, `Ctrl+A`
+- [x] **1. Ctrl+tecla insere texto no commit** — com o input focado, `Ctrl+A`
   insere `a`. `app.rs:227` repassa tudo que não é Tab/Esc/Ctrl+C e
   `commit_input.rs:26` aceita qualquer `Char` sem checar modificadores.
-- [ ] **2. Mensagem de commit longa some** — o input não tem scroll horizontal;
+- [x] **2. Mensagem de commit longa some** — o input não tem scroll horizontal;
   o texto é cortado e o cursor desaparece após a largura do painel
   (`commit_input.rs:92`).
-- [ ] **3. Caracteres largos desalinham a UI** — CJK/emoji usam
+- [x] **3. Caracteres largos desalinham a UI** — CJK/emoji usam
   `chars().count()` como largura em vez da largura de exibição (unicode-width).
   Afeta padding do diff, cursor do commit e alinhamento da letra de status na
   lista de mudanças.
-- [ ] **4. Mensagens do status bar nunca somem** — "Committed" e erros ficam
+- [x] **4. Mensagens do status bar nunca somem** — "Committed" e erros ficam
   para sempre (`app.rs:178-183`). Adicionar expiração.
-- [ ] **5. Conflitos de merge não tratados** — `UU` aparece duplicado em
+- [x] **5. Conflitos de merge não tratados** — `UU` aparece duplicado em
   Staged e Changes, e o código `U` é usado tanto para untracked quanto para
   unmerged. Precisa de seção/indicador próprio para conflitos.
-- [ ] **6. Clicar no arquivo já selecionado recarrega o diff** e reseta o
+- [x] **6. Clicar no arquivo já selecionado recarrega o diff** e reseta o
   scroll para o topo.
-- [ ] **7. Commit com hook interativo / GPG** (pinentry no tty) pode corromper
+- [x] **7. Commit com hook interativo / GPG** (pinentry no tty) pode corromper
   a TUI, pois `git commit` roda com o terminal em raw mode.
-- [ ] **8. Paths longos na lista de mudanças** não são truncados com `…` e a
+- [x] **8. Paths longos na lista de mudanças** não são truncados com `…` e a
   letra de status é cortada.
-- [ ] **9. Docstring errada** em `resolve_toplevel` — diz que retorna `None`
+- [x] **9. Docstring errada** em `resolve_toplevel` — diz que retorna `None`
   mas retorna `Err` (`cli.rs:138`).
 
 ## Performance

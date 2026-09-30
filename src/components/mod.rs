@@ -12,6 +12,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use crate::action::Action;
+use crate::text;
 
 use hitbox::button_span;
 
@@ -43,6 +44,7 @@ pub fn code_color(code: char) -> Color {
         'M' => Color::Yellow,
         'A' | 'U' => Color::Green,
         'D' => Color::Red,
+        '!' => Color::LightRed,
         'R' | 'C' => Color::Blue,
         _ => Color::White,
     }
@@ -90,11 +92,19 @@ pub fn file_row_line(
     } else {
         format!(" {dir}")
     };
-    let name_w = name_span.chars().count().min(avail);
-    let name_txt: String = name_span.chars().take(name_w).collect();
-    let dir_w = dir_span.chars().count().min(avail.saturating_sub(name_w));
-    let dir_txt: String = dir_span.chars().take(dir_w).collect();
-    let used = name_w + dir_w;
+    // The name wins the space; whatever is cut (name or dir) ends in `…`.
+    // A dir with room for less than one char plus `…` is dropped.
+    let name_txt = text::ellipsize(&name_span, avail);
+    let name_w = text::width(&name_txt);
+    let dir_room = avail - name_w;
+    let dir_txt = if dir_room >= 3 {
+        text::ellipsize(&dir_span, dir_room)
+    } else if text::width(&dir_span) <= dir_room {
+        dir_span
+    } else {
+        String::new()
+    };
+    let used = name_w + text::width(&dir_txt);
     let pad = avail.saturating_sub(used);
 
     let mut spans = vec![
@@ -113,4 +123,43 @@ pub fn file_row_line(
     }
     spans.push(Span::styled(code_s, style.fg(code_color(code))));
     (Line::from(spans), hits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(path: &str, width: usize, buttons: &[(&'static str, Action)]) -> String {
+        let (line, _) = file_row_line(path, 'M', 1, width, Style::default(), buttons);
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn long_paths_are_ellipsized_and_keep_the_code() {
+        // Dir cut first, then the name; the code always holds the last column.
+        assert_eq!(
+            row("src/components/changes.rs", 30, &[]),
+            " changes.rs src/components   M"
+        );
+        assert_eq!(
+            row("src/components/changes.rs", 20, &[]),
+            " changes.rs src/co…M"
+        );
+        assert_eq!(
+            row("src/components/a_very_long_name.rs", 12, &[]),
+            " a_very_lo…M"
+        );
+        let buttons = [("+", Action::StageAll)];
+        let r = row("src/components/changes.rs", 20, &buttons);
+        assert_eq!(r, " changes.rs src… + M");
+    }
+
+    #[test]
+    fn wide_names_are_measured_in_columns() {
+        for (path, w) in [("docs/日本語のファイル.md", 16), ("🦀/crab.rs", 12)] {
+            let r = row(path, w, &[]);
+            assert_eq!(text::width(&r), w, "{r:?}");
+            assert!(r.ends_with('M'), "{r:?}");
+        }
+    }
 }

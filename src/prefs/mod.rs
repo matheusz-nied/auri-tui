@@ -83,13 +83,13 @@ impl FileStore {
         Self { path: path.into() }
     }
 
-    /// The real preferences path: `$TIDE_CONFIG_DIR/preferences.toml`
-    /// (test/override hook), else `$XDG_CONFIG_HOME/tide/preferences.toml`,
-    /// else `$HOME/.config/tide/preferences.toml` (also on macOS).
+    /// The real preferences path: `$AURI_CONFIG_DIR/preferences.toml`
+    /// (test/override hook), else `$XDG_CONFIG_HOME/auri/preferences.toml`,
+    /// else `$HOME/.config/auri/preferences.toml` (also on macOS).
     /// `None` when no home directory is known.
     pub fn default_path() -> Option<PathBuf> {
         resolve_path(
-            std::env::var_os("TIDE_CONFIG_DIR"),
+            std::env::var_os("AURI_CONFIG_DIR"),
             std::env::var_os("XDG_CONFIG_HOME"),
             std::env::var_os("HOME"),
         )
@@ -99,20 +99,20 @@ impl FileStore {
 /// Pure path resolution — takes the env values so it's testable without
 /// touching the process environment.
 fn resolve_path(
-    tide_dir: Option<std::ffi::OsString>,
+    auri_dir: Option<std::ffi::OsString>,
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = tide_dir.filter(|d| !d.is_empty()) {
+    if let Some(dir) = auri_dir.filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir).join("preferences.toml"));
     }
     if let Some(dir) = xdg.filter(|d| !d.is_empty()) {
-        return Some(PathBuf::from(dir).join("tide").join("preferences.toml"));
+        return Some(PathBuf::from(dir).join("auri").join("preferences.toml"));
     }
     home.filter(|d| !d.is_empty()).map(|h| {
         PathBuf::from(h)
             .join(".config")
-            .join("tide")
+            .join("auri")
             .join("preferences.toml")
     })
 }
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_prefers_tide_dir_then_xdg_then_home() {
+    fn resolve_path_prefers_auri_dir_then_xdg_then_home() {
         let t = Some(OsString::from("/t"));
         let x = Some(OsString::from("/x"));
         let h = Some(OsString::from("/h"));
@@ -279,17 +279,17 @@ mod tests {
         );
         assert_eq!(
             resolve_path(None, x.clone(), h.clone()),
-            Some(PathBuf::from("/x/tide/preferences.toml"))
+            Some(PathBuf::from("/x/auri/preferences.toml"))
         );
         assert_eq!(
             resolve_path(None, None, h.clone()),
-            Some(PathBuf::from("/h/.config/tide/preferences.toml"))
+            Some(PathBuf::from("/h/.config/auri/preferences.toml"))
         );
         assert_eq!(resolve_path(None, None, None), None);
         // Empty strings count as unset.
         assert_eq!(
             resolve_path(Some(OsString::new()), None, h),
-            Some(PathBuf::from("/h/.config/tide/preferences.toml"))
+            Some(PathBuf::from("/h/.config/auri/preferences.toml"))
         );
     }
 }

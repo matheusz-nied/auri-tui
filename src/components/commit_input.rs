@@ -9,6 +9,7 @@ use ratatui::Frame;
 
 use crate::action::Action;
 use crate::component::Component;
+use crate::text;
 
 use super::border_style;
 use super::hitbox::Hitboxes;
@@ -148,7 +149,11 @@ impl Component for CommitInput {
         let text_w = inner.width.saturating_sub(ai_w + 1);
         let text_rect = Rect::new(inner.x, inner.y, text_w, inner.height.min(1));
 
-        let scroll = (self.cursor + 1).saturating_sub(text_w as usize);
+        // Scroll in columns (wide chars take two) so the cursor cell stays
+        // inside the text area.
+        let message = self.message_text();
+        let cursor_col = text::width(&self.message[..self.cursor].iter().collect::<String>());
+        let scroll = (cursor_col + 1).saturating_sub(text_w as usize);
         let line = if self.message.is_empty() {
             let placeholder = match (&self.generating, self.branch.is_empty()) {
                 (Some(provider), _) => format!("Generating with {provider}… (Esc to cancel)"),
@@ -160,7 +165,7 @@ impl Component for CommitInput {
                 Style::default().fg(Color::DarkGray),
             ))
         } else {
-            Line::from(self.message[scroll..].iter().collect::<String>())
+            Line::from(text::slice(&message, scroll, text_w as usize))
         };
         f.render_widget(Paragraph::new(line), text_rect);
 
@@ -198,7 +203,7 @@ impl Component for CommitInput {
         }
 
         if focused && text_w > 0 {
-            f.set_cursor_position((text_rect.x + (self.cursor - scroll) as u16, text_rect.y));
+            f.set_cursor_position((text_rect.x + (cursor_col - scroll) as u16, text_rect.y));
         }
     }
 }
@@ -338,6 +343,25 @@ mod tests {
         assert_eq!(c.message_text(), "feat: x");
         c.update(&Action::CommitMessageFailed);
         assert!(c.generating.is_none());
+    }
+
+    #[test]
+    fn wide_chars_keep_the_cursor_on_screen() {
+        let mut c = CommitInput::default();
+        // 30 CJK chars = 60 columns, wider than the 51-column text area.
+        type_str(&mut c, &"日".repeat(30));
+        let mut term = draw(&mut c);
+        // Cursor sits right after the last char, inside the text area.
+        term.backend_mut().assert_cursor_position((51, 1));
+        let buf = term.backend().buffer();
+        assert_eq!(buf[(52, 1)].symbol(), " ", "gap before the AI button");
+        assert_eq!(buf[(54, 1)].symbol(), "✦");
+        // Home: no scroll, cursor at the first column.
+        c.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::empty()));
+        c.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::empty()));
+        let mut term = draw(&mut c);
+        term.backend_mut().assert_cursor_position((3, 1));
+        assert_eq!(term.backend().buffer()[(1, 1)].symbol(), "日");
     }
 
     #[test]

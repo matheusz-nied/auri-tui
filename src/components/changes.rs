@@ -8,12 +8,13 @@ use ratatui::Frame;
 use crate::action::{Action, PanelId};
 use crate::component::Component;
 use crate::git::{FileChange, Section};
+use crate::text;
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, file_row_line, selection_style, SCROLL_LINES};
 
-/// VS Code–style changes list: a "Staged Changes" section followed by a
-/// "Changes" section (unstaged + untracked). Section headers are rendered but
+/// VS Code–style changes list: "Merge Changes" (conflicts, only while there
+/// are any), then "Staged Changes", then "Changes" (unstaged + untracked). Section headers are rendered but
 /// not selectable. File rows show action buttons (discard/stage/unstage) when
 /// hovered or selected; section headers carry a stage-all/unstage-all button.
 pub struct Changes {
@@ -64,16 +65,23 @@ impl Changes {
     /// changed so the diff view follows.
     fn set_status(&mut self, files: &[FileChange]) -> Option<Action> {
         let prev = self.selected_file();
-        let staged: Vec<_> = files
-            .iter()
-            .filter(|f| f.section == Section::Staged)
-            .collect();
-        let rest: Vec<_> = files
-            .iter()
-            .filter(|f| f.section != Section::Staged)
-            .collect();
+        let in_section = |s: &[Section]| -> Vec<&FileChange> {
+            files.iter().filter(|f| s.contains(&f.section)).collect()
+        };
+        let conflicted = in_section(&[Section::Conflicted]);
+        let staged = in_section(&[Section::Staged]);
+        let rest = in_section(&[Section::Unstaged, Section::Untracked]);
 
         let mut rows = Vec::new();
+        // No stage-all button: resolving conflicts in bulk is too easy to do
+        // by accident — each file is staged (marked resolved) on its own.
+        if !conflicted.is_empty() {
+            rows.push(Row::Header(
+                format!("Merge Changes ({})", conflicted.len()),
+                None,
+            ));
+            rows.extend(conflicted.iter().map(|f| Row::File((*f).clone())));
+        }
         if !staged.is_empty() {
             rows.push(Row::Header(
                 format!("Staged Changes ({})", staged.len()),
@@ -85,7 +93,7 @@ impl Changes {
             format!("Changes ({})", rest.len()),
             (!rest.is_empty()).then_some(("+", Action::StageAll)),
         ));
-        if rest.is_empty() && staged.is_empty() {
+        if rest.is_empty() && staged.is_empty() && conflicted.is_empty() {
             rows.push(Row::Header("No changes".to_string(), None));
         }
         rows.extend(rest.iter().map(|f| Row::File((*f).clone())));
@@ -204,10 +212,18 @@ fn discard_confirm(f: &FileChange) -> Action {
     }
 }
 
+/// Whether `d` / the discard button apply (never to staged or conflicted
+/// files).
+fn can_discard(f: &FileChange) -> bool {
+    matches!(f.section, Section::Unstaged | Section::Untracked)
+}
+
 /// The buttons a file row offers, as `(glyph, action)` in display order.
 fn row_buttons(f: &FileChange) -> Vec<(&'static str, Action)> {
     match f.section {
         Section::Staged => vec![("−", Action::ToggleStage(f.clone()))],
+        // `+` stages the file, which marks the conflict resolved.
+        Section::Conflicted => vec![("+", Action::ToggleStage(f.clone()))],
         _ => vec![
             ("↶", discard_confirm(f)),
             ("+", Action::ToggleStage(f.clone())),
@@ -225,7 +241,7 @@ impl Component for Changes {
             }
             KeyCode::Char('d') => self
                 .selected_file()
-                .filter(|f| f.section != Section::Staged)
+                .filter(can_discard)
                 .map(|f| discard_confirm(&f)),
             KeyCode::Char('a') => Some(Action::StageAll),
             KeyCode::Enter => Some(Action::Focus(PanelId::DiffView)),
@@ -339,8 +355,8 @@ impl Component for Changes {
                         // 3-column button, right-aligned; truncate the title
                         // so the button always fits.
                         let bx = width.saturating_sub(3);
-                        let title: String = format!(" {h}").chars().take(bx).collect();
-                        let pad = bx - title.chars().count();
+                        let title = text::truncate(&format!(" {h}"), bx);
+                        let pad = bx - text::width(&title);
                         let y = inner.y + (i - self.scroll) as u16;
                         hits.push((inner.x + bx as u16, y, action.clone()));
                         vec![
@@ -540,6 +556,44 @@ mod tests {
         // "Staged Changes" header is row 0 (screen y=1); "−" at inner.x+15..+18.
         let act = c.handle_mouse(click(16, 1), area);
         assert!(matches!(act, Some(Action::UnstageAll)));
+    }
+
+    #[test]
+    fn conflicts_get_their_own_section_without_discard() {
+        let mut c = Changes::default();
+        let conflict = FileChange {
+            code: '!',
+            ..fc("both.rs", Section::Conflicted)
+        };
+        c.update(&Action::StatusLoaded(vec![
+            conflict.clone(),
+            fc("s.rs", Section::Staged),
+            fc("u.rs", Section::Unstaged),
+        ]));
+        let term = draw(&mut c, 30, 10);
+        let rows: Vec<String> = (1..8)
+            .map(|y| {
+                (1..29)
+                    .map(|x| term.backend().buffer()[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(rows[0].starts_with(" Merge Changes (1)"), "{rows:?}");
+        assert!(
+            rows[1].contains("both.rs") && rows[1].ends_with('!'),
+            "{rows:?}"
+        );
+        assert!(rows[2].starts_with(" Staged Changes (1)"), "{rows:?}");
+        assert!(rows[4].starts_with(" Changes (1)"), "{rows:?}");
+        // Selected conflict: only a stage (= mark resolved) button, and `d`
+        // does nothing.
+        assert_eq!(selected(&c), Some(("both.rs".into(), Section::Conflicted)));
+        assert_eq!(row_buttons(&conflict).len(), 1);
+        assert!(c.handle_key(key(KeyCode::Char('d'))).is_none());
+        assert!(matches!(
+            c.handle_key(key(KeyCode::Char(' '))),
+            Some(Action::ToggleStage(f)) if f.section == Section::Conflicted
+        ));
     }
 
     #[test]

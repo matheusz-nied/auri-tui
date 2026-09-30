@@ -35,6 +35,25 @@ struct OpenFile {
     stamp: Option<FileStamp>,
 }
 
+/// Gives the real terminal to a child process that may prompt on it (GPG
+/// pinentry, an interactive commit hook) and takes it back. The TUI draws
+/// in raw mode on the alternate screen, where such a prompt would be
+/// unusable and scribble over the frame.
+pub trait TerminalHandoff {
+    /// Leave raw mode / the alternate screen.
+    fn release(&mut self);
+    /// Re-enter them; the next frame is redrawn from scratch.
+    fn reclaim(&mut self);
+}
+
+/// No terminal to hand over (tests).
+struct NoHandoff;
+
+impl TerminalHandoff for NoHandoff {
+    fn release(&mut self) {}
+    fn reclaim(&mut self) {}
+}
+
 /// Owns the components, the focus state, the last-frame layout rects and the
 /// action queue. It is the *only* place where `GitBackend` and `FsBackend`
 /// are called: side effects requested by components (`Refresh`,
@@ -47,6 +66,10 @@ pub struct App {
     fs: Box<dyn FsBackend>,
     /// Background AI commit-message generation; polled once per loop.
     ai: Box<dyn AiRunner>,
+    /// Hands the terminal to `git commit` when it may prompt.
+    terminal: Box<dyn TerminalHandoff>,
+    /// The screen was used by someone else: clear before the next draw.
+    needs_clear: bool,
     events: Events,
     /// Panels in focus-cycling order.
     components: Vec<(PanelId, Box<dyn Component>)>,
@@ -91,8 +114,11 @@ pub struct App {
     /// `false` when the initial `load()` failed — never save over a file we
     /// couldn't parse.
     prefs_writable: bool,
-    /// (message, is_error) shown in the status bar.
+    /// (message, is_error) shown in the status bar; set it with `notify`.
+    /// Cleared by the next key press or after `MESSAGE_TTL`/`ERROR_TTL`.
     message: Option<(String, bool)>,
+    /// When `message` was set.
+    message_at: Instant,
     /// Last key/mouse event time — periodic refresh is deferred while input
     /// is actively arriving (see `should_refresh`).
     last_input: Option<Instant>,
@@ -105,6 +131,11 @@ pub struct App {
 /// During an input burst (trackpad scroll = dozens of events) the synchronous
 /// git calls must not interleave with event handling.
 const REFRESH_IDLE: Duration = Duration::from_secs(1);
+
+/// How long an info message stays in the status bar.
+const MESSAGE_TTL: Duration = Duration::from_secs(4);
+/// Errors stay longer — they may need reading.
+const ERROR_TTL: Duration = Duration::from_secs(10);
 
 /// Whether a `Tick` may enqueue `Refresh`: only once input has been quiet for
 /// `REFRESH_IDLE` (or no input has ever arrived).
@@ -127,6 +158,8 @@ impl App {
             git,
             fs,
             ai: Box::new(ProcessRunner::default()),
+            terminal: Box::new(NoHandoff),
+            needs_clear: false,
             events: Events::default(),
             components: vec![
                 (PanelId::CommitInput, Box::new(CommitInput::default())),
@@ -157,6 +190,7 @@ impl App {
             store,
             prefs_writable: true,
             message: None,
+            message_at: Instant::now(),
             last_input: None,
             dirty: true,
             running: true,
@@ -181,6 +215,13 @@ impl App {
         app
     }
 
+    /// Set how the terminal is handed to prompting child processes (the
+    /// default does nothing — fine without a real terminal).
+    pub fn with_terminal_handoff(mut self, t: Box<dyn TerminalHandoff>) -> Self {
+        self.terminal = t;
+        self
+    }
+
     /// Test hook: swap in a fake AI runner.
     pub fn with_ai_runner(mut self, r: Box<dyn AiRunner>) -> Self {
         self.ai = r;
@@ -199,8 +240,16 @@ impl App {
                 }
             }
             self.poll_ai();
+            self.expire_message(Instant::now());
             self.dispatch();
             self.sync_prefs();
+            if self.needs_clear {
+                // Forget the last frame: the screen holds someone else's
+                // output now, and only a full redraw replaces it.
+                terminal.clear()?;
+                self.needs_clear = false;
+                self.dirty = true;
+            }
             if self.dirty {
                 terminal.draw(|f| self.render(f))?;
                 self.dirty = false;
@@ -392,7 +441,16 @@ impl App {
                 if !staged {
                     self.enqueue(Action::Error("Nothing staged".to_string()));
                 } else {
-                    match self.git.commit(&msg) {
+                    let handoff = self.git.commit_may_prompt();
+                    if handoff {
+                        self.terminal.release();
+                    }
+                    let result = self.git.commit(&msg);
+                    if handoff {
+                        self.terminal.reclaim();
+                        self.needs_clear = true;
+                    }
+                    match result {
                         Ok(()) => {
                             self.enqueue(Action::CommitDone);
                             self.enqueue(Action::Refresh);
@@ -402,13 +460,13 @@ impl App {
                 }
             }
             Action::CommitDone => {
-                self.message = Some(("Committed".to_string(), false));
+                self.notify("Committed", false);
             }
             Action::GenerateCommitMessage => self.start_ai_generation(),
             Action::CancelCommitMessage => self.ai.cancel(),
             Action::ToggleAiProvider => self.toggle_ai_provider(),
             Action::Error(msg) => {
-                self.message = Some((msg, true));
+                self.notify(msg, true);
             }
             Action::BranchLoaded(branch) => self.branch = branch,
             // Handled entirely by components via `update`: Confirm opens the
@@ -429,6 +487,25 @@ impl App {
             | Action::FileReloaded(_)
             | Action::ExplorerCollapseAll
             | Action::PreferencesChanged(_) => {}
+        }
+    }
+
+    /// Show `msg` in the status bar (red when `is_error`).
+    fn notify(&mut self, msg: impl Into<String>, is_error: bool) {
+        self.message = Some((msg.into(), is_error));
+        self.message_at = Instant::now();
+    }
+
+    /// Drop the status message once it has been shown for its TTL. Called
+    /// once per loop iteration (at least every event-poll timeout).
+    fn expire_message(&mut self, now: Instant) {
+        let Some((_, is_error)) = &self.message else {
+            return;
+        };
+        let ttl = if *is_error { ERROR_TTL } else { MESSAGE_TTL };
+        if now.duration_since(self.message_at) >= ttl {
+            self.message = None;
+            self.dirty = true;
         }
     }
 
@@ -475,7 +552,7 @@ impl App {
             }
             AiOutcome::Cancelled => {
                 self.enqueue(Action::CommitMessageFailed);
-                self.message = Some(("Generation cancelled".to_string(), false));
+                self.notify("Generation cancelled", false);
             }
         }
     }
@@ -521,10 +598,10 @@ impl App {
                 self.enqueue(Action::CommitMessageGenerating {
                     provider: provider.clone(),
                 });
-                self.message = Some((
+                self.notify(
                     format!("Generating commit message with {provider}… (Esc to cancel)"),
                     false,
-                ));
+                );
             }
             Err(e) => self.enqueue(Action::Error(format!("{e}"))),
         }
@@ -546,10 +623,10 @@ impl App {
             AiProvider::Opencode => AiProvider::Codex,
         };
         self.save_prefs();
-        self.message = Some((
+        self.notify(
             format!("AI provider: {}", self.prefs.ai.provider.name()),
             false,
-        ));
+        );
     }
 
     /// Reload the diff of the currently selected file, if it still exists in
@@ -960,7 +1037,25 @@ mod tests {
     use std::rc::Rc;
 
     /// Minimal backend so `App` can be constructed without a repo.
-    struct FakeGit;
+    #[derive(Default)]
+    struct FakeGit {
+        /// When set, commits "may prompt" and are recorded here.
+        prompting: Option<CallLog>,
+    }
+
+    type CallLog = Rc<RefCell<Vec<&'static str>>>;
+
+    /// Records handoffs into the same log as `FakeGit`'s commits.
+    struct FakeHandoff(CallLog);
+
+    impl TerminalHandoff for FakeHandoff {
+        fn release(&mut self) {
+            self.0.borrow_mut().push("release");
+        }
+        fn reclaim(&mut self) {
+            self.0.borrow_mut().push("reclaim");
+        }
+    }
 
     impl GitBackend for FakeGit {
         fn root(&self) -> PathBuf {
@@ -992,7 +1087,13 @@ mod tests {
             Ok(())
         }
         fn commit(&self, _message: &str) -> Result<()> {
+            if let Some(log) = &self.prompting {
+                log.borrow_mut().push("commit");
+            }
             Ok(())
+        }
+        fn commit_may_prompt(&self) -> bool {
+            self.prompting.is_some()
         }
         fn branch(&self) -> Result<String> {
             Ok("main".to_string())
@@ -1129,7 +1230,7 @@ mod tests {
 
     fn app(store: MemoryStore) -> App {
         App::new(
-            Box::new(FakeGit),
+            Box::new(FakeGit::default()),
             Box::new(FakeFs::default()),
             Box::new(store),
         )
@@ -1139,7 +1240,11 @@ mod tests {
     /// already processed.
     fn explorer_app(store: MemoryStore) -> (App, FakeFs) {
         let fs = FakeFs::sample();
-        let mut app = App::new(Box::new(FakeGit), Box::new(fs.clone()), Box::new(store));
+        let mut app = App::new(
+            Box::new(FakeGit::default()),
+            Box::new(fs.clone()),
+            Box::new(store),
+        );
         app.enqueue(Action::Refresh);
         app.dispatch();
         (app, fs)
@@ -1256,7 +1361,7 @@ mod tests {
         let path = dir.path().join("preferences.toml");
         std::fs::write(&path, "[[[bad").unwrap();
         let mut app = App::new(
-            Box::new(FakeGit),
+            Box::new(FakeGit::default()),
             Box::new(FakeFs::default()),
             Box::new(FileStore::new(path.clone())),
         );
@@ -1494,6 +1599,61 @@ mod tests {
         app.dispatch();
         assert!(screen(&mut app).contains("1 edited elsewhere"));
         assert!(app.message.is_none(), "{:?}", app.message);
+    }
+
+    #[test]
+    fn prompting_commit_runs_with_the_terminal_handed_over() {
+        let log = CallLog::default();
+        let git = FakeGit {
+            prompting: Some(log.clone()),
+        };
+        let mut app = App::new(
+            Box::new(git),
+            Box::new(FakeFs::default()),
+            Box::new(MemoryStore::new(None)),
+        )
+        .with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
+        app.last_status = vec![staged_file()];
+        app.enqueue(Action::Commit("msg".to_string()));
+        app.dispatch();
+        assert_eq!(*log.borrow(), ["release", "commit", "reclaim"]);
+        assert!(
+            app.needs_clear,
+            "the next frame must be redrawn from scratch"
+        );
+    }
+
+    #[test]
+    fn plain_commit_keeps_the_terminal() {
+        let log = CallLog::default();
+        let mut app =
+            app(MemoryStore::new(None)).with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
+        app.last_status = vec![staged_file()];
+        app.enqueue(Action::Commit("msg".to_string()));
+        app.dispatch();
+        assert!(log.borrow().is_empty());
+        assert!(!app.needs_clear);
+        assert!(matches!(&app.message, Some((m, false)) if m == "Committed"));
+    }
+
+    #[test]
+    fn status_messages_expire() {
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.enqueue(Action::CommitDone);
+        app.dispatch();
+        let t0 = app.message_at;
+        app.expire_message(t0 + MESSAGE_TTL - Duration::from_millis(1));
+        assert!(matches!(&app.message, Some((m, false)) if m == "Committed"));
+        app.expire_message(t0 + MESSAGE_TTL);
+        assert!(app.message.is_none());
+        // Errors outlive info messages.
+        app.enqueue(Action::Error("boom".to_string()));
+        app.dispatch();
+        let t0 = app.message_at;
+        app.expire_message(t0 + MESSAGE_TTL);
+        assert!(app.message.is_some());
+        app.expire_message(t0 + ERROR_TTL);
+        assert!(app.message.is_none());
     }
 
     #[test]

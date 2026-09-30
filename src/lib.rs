@@ -10,3 +10,4 @@ pub mod highlight;
 pub mod icons;
 pub mod layout;
 pub mod prefs;
+pub mod text;

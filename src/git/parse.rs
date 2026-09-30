@@ -10,11 +10,13 @@ use crate::git::{
 /// Records are NUL-separated `XY <path>` fields. When X or Y is `R`/`C`
 /// (rename/copy), the following NUL-separated field is the original path.
 /// A file with both X and Y set produces an entry in `Staged` (code X) *and*
-/// `Unstaged` (code Y); `??` produces an `Untracked` entry (code `U`).
-/// Result is grouped by section (Staged, Unstaged, Untracked), each sorted by
-/// path.
+/// `Unstaged` (code Y); `??` produces an `Untracked` entry (code `U`); an
+/// unmerged pair (`UU AA DD AU UA DU UD`) produces a single `Conflicted`
+/// entry (code `!`). Result is grouped by section (Conflicted, Staged,
+/// Unstaged, Untracked), each sorted by path.
 pub fn parse_status(data: &[u8]) -> Vec<FileChange> {
     let mut fields = data.split(|b| *b == 0);
+    let mut conflicted = Vec::new();
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
     let mut untracked = Vec::new();
@@ -46,6 +48,10 @@ pub fn parse_status(data: &[u8]) -> Vec<FileChange> {
             }
             continue;
         }
+        if is_unmerged(x, y) {
+            conflicted.push(change(Section::Conflicted, '!'));
+            continue;
+        }
         if x != ' ' {
             staged.push(change(Section::Staged, x));
         }
@@ -55,12 +61,19 @@ pub fn parse_status(data: &[u8]) -> Vec<FileChange> {
     }
 
     let by_path = |a: &FileChange, b: &FileChange| a.path.cmp(&b.path);
+    conflicted.sort_by(by_path);
     staged.sort_by(by_path);
     unstaged.sort_by(by_path);
     untracked.sort_by(by_path);
-    staged.extend(unstaged);
-    staged.extend(untracked);
-    staged
+    conflicted.extend(staged);
+    conflicted.extend(unstaged);
+    conflicted.extend(untracked);
+    conflicted
+}
+
+/// Porcelain v1 unmerged states: either side `U`, or both added/deleted.
+fn is_unmerged(x: char, y: char) -> bool {
+    x == 'U' || y == 'U' || (x, y) == ('A', 'A') || (x, y) == ('D', 'D')
 }
 
 /// Parse a unified diff into side-by-side rows.
@@ -269,6 +282,35 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].section, Section::Untracked);
         assert_eq!(changes[0].code, 'U');
+    }
+
+    #[test]
+    fn status_conflicts_get_one_entry_in_their_own_section() {
+        let data = status_bytes(&[
+            "UU both.rs",
+            "AA added.rs",
+            "DU deleted_by_us.rs",
+            "M  staged.rs",
+            "?? new.rs",
+        ]);
+        let changes = parse_status(&data);
+        let conflicted: Vec<_> = changes
+            .iter()
+            .filter(|c| c.section == Section::Conflicted)
+            .map(|c| (c.path.as_str(), c.code))
+            .collect();
+        assert_eq!(
+            conflicted,
+            [
+                ("added.rs", '!'),
+                ("both.rs", '!'),
+                ("deleted_by_us.rs", '!')
+            ]
+        );
+        // Conflicts come first and never repeat in Staged/Unstaged.
+        assert_eq!(changes.len(), 5);
+        assert_eq!(changes[3].path, "staged.rs");
+        assert_eq!(changes[4].section, Section::Untracked);
     }
 
     #[test]

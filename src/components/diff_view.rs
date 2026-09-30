@@ -9,6 +9,7 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::git::{CellKind, DiffCell, DiffDoc, DiffRow, DiffSource, RowKind};
 use crate::highlight::Highlighter;
+use crate::text;
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, SCROLL_LINES};
@@ -63,7 +64,7 @@ impl DiffView {
             .iter()
             .flat_map(|r| [r.left.as_ref(), r.right.as_ref()])
             .flatten()
-            .map(|c| c.text.chars().count())
+            .map(|c| text::width(&c.text))
             .max()
             .unwrap_or(0);
         let mut counts = [0; 2];
@@ -187,7 +188,7 @@ fn cell_line(
     )];
     let mut used = 0;
     for span in highlighter.spans(idx, &c.text, scroll_x, text_w) {
-        used += span.content.chars().count();
+        used += text::width(&span.content);
         spans.push(span.patch_style(bg));
     }
     spans.push(Span::styled(" ".repeat(text_w.saturating_sub(used)), bg));
@@ -198,8 +199,8 @@ fn hunk_header_line(text: &str, gutter_w: usize, text_w: usize) -> Line<'static>
     let style = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::ITALIC);
-    let text: String = text.chars().take(text_w).collect();
-    let pad = text_w.saturating_sub(text.chars().count());
+    let text = text::truncate(text, text_w);
+    let pad = text_w.saturating_sub(text::width(&text));
     Line::from(vec![
         Span::styled(" ".repeat(gutter_w + 1), style),
         Span::styled(format!("{text}{:pad$}", ""), style),

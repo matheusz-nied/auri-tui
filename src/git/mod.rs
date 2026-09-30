@@ -7,9 +7,12 @@ use anyhow::Result;
 
 /// Which section of the status list a change belongs to. A single file can
 /// appear in both `Staged` and `Unstaged` when it has staged and unstaged
-/// modifications.
+/// modifications. An unmerged path (merge/rebase conflict) appears only in
+/// `Conflicted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
+    /// Unmerged paths; staging one marks its conflict resolved.
+    Conflicted,
     Staged,
     Unstaged,
     Untracked,
@@ -23,7 +26,8 @@ pub struct FileChange {
     /// Original path for renames/copies.
     pub orig_path: Option<String>,
     pub section: Section,
-    /// One-letter status for display: M A D R U ? etc.
+    /// One-letter status for display: M A D R C T, `U` untracked, `!`
+    /// conflicted.
     pub code: char,
 }
 
@@ -112,11 +116,19 @@ pub trait GitBackend {
     fn stage(&self, path: &str) -> Result<()>;
     fn unstage(&self, path: &str) -> Result<()>;
     /// Revert a file's changes: delete untracked files, restore unstaged
-    /// modifications from the index. Errors on `Staged` files.
+    /// modifications from the index. Errors on `Staged`/`Conflicted` files.
     fn discard(&self, file: &FileChange) -> Result<()>;
+    /// Stage every change except conflicted paths — staging those would
+    /// silently mark them resolved; that is `stage(path)`, one at a time.
     fn stage_all(&self) -> Result<()>;
     fn unstage_all(&self) -> Result<()>;
     fn commit(&self, message: &str) -> Result<()>;
+    /// Whether `commit` may talk to the terminal — commit signing (GPG
+    /// pinentry, ssh passphrase) or commit hooks that can prompt — so the
+    /// TUI must hand the terminal over while it runs.
+    fn commit_may_prompt(&self) -> bool {
+        false
+    }
     fn branch(&self) -> Result<String>;
     /// HEAD's full hash; `None` on an unborn branch (repo with no commits).
     fn head(&self) -> Result<Option<String>>;
