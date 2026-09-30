@@ -4,15 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>auri — git diffs in your terminal</title>
-<meta name="description" content="auri is a small terminal UI to browse files and git diffs side by side. Explorer, source control, history — in your terminal.">
+<meta name="description" content="auri is a fast terminal UI to explore your repo and review git diffs side by side. Explorer, source control, history and optional AI commit drafts — no editor, no browser.">
+<meta name="theme-color" content="#0a0d14">
 <meta property="og:title" content="auri — git diffs in your terminal">
-<meta property="og:description" content="Browse files and git diffs side by side, right in your terminal.">
+<meta property="og:description" content="Explore your repo and review git diffs side by side, right in your terminal.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://matheusz-nied.github.io/auri-tui/">
+<meta name="twitter:card" content="summary">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='12' cy='16' r='7' fill='%23f2b84b'/%3E%3Ccircle cx='23' cy='16' r='4' fill='%236ea8ff'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<noscript><style>.rv{opacity:1!important;transform:none!important}.term .screen::after{content:"Enable JavaScript to try the interactive demo.";display:grid;place-items:center;height:100%;color:#8b93a7}</style></noscript>
 <style>
   :root {
     --bg: #0a0d14;
@@ -29,279 +32,1228 @@
     --del-fg: #ff8a8a;
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ease: cubic-bezier(.2, .7, .2, 1);
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
+    font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden;
   }
   a { color: inherit; }
-  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+  button { font-family: inherit; }
+  section { scroll-margin-top: 70px; }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; border-radius: 6px; }
+  ::selection { background: rgba(242, 184, 75, .3); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  .mono { font-family: var(--mono); }
+  .g { color: var(--gold); } .b { color: var(--blue); }
 
-  /* starfield */
-  .sky { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  /* ── background ─────────────────────────────────────────── */
+  #sky { position: fixed; inset: 0; z-index: -2; width: 100%; height: 100%; pointer-events: none; }
+  .nebula { position: fixed; inset: 0; z-index: -3; pointer-events: none;
     background:
-      radial-gradient(600px 400px at 18% -5%, rgba(242,184,75,.10), transparent 70%),
-      radial-gradient(600px 400px at 85% 0%, rgba(110,168,255,.10), transparent 70%),
+      radial-gradient(700px 480px at 12% -8%, rgba(242,184,75,.13), transparent 70%),
+      radial-gradient(700px 480px at 92% 4%, rgba(110,168,255,.13), transparent 70%),
+      radial-gradient(900px 600px at 50% 110%, rgba(110,168,255,.07), transparent 70%),
       var(--bg); }
-  .sky i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #fff; opacity: .5; }
+  .progress { position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 60; transform-origin: 0 50%; transform: scaleX(0);
+    background: linear-gradient(90deg, var(--gold), var(--blue)); }
 
-  nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+  /* ── nav ────────────────────────────────────────────────── */
+  .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50; border-bottom: 1px solid transparent; transition: background .3s, border-color .3s; }
+  .nav.scrolled { background: rgba(10,13,20,.72); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-color: var(--line); }
+  .nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
   .logo { display: flex; align-items: center; gap: 10px; font: 700 20px var(--mono); text-decoration: none; letter-spacing: -.02em; }
   .logo svg { width: 30px; height: 30px; }
-  .nav-links { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
-  .nav-links a { text-decoration: none; }
+  .nav-links { display: flex; align-items: center; gap: 26px; font-size: 14px; color: var(--muted); }
+  .nav-links a { text-decoration: none; transition: color .2s; }
   .nav-links a:hover { color: var(--text); }
+  .nav-links .gh { color: var(--text); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; background: rgba(21,27,39,.6); }
+  .nav-links .gh:hover { border-color: var(--gold); }
 
-  header.hero { text-align: center; padding: 64px 0 40px; }
-  .badge { display: inline-block; font: 500 12px var(--mono); color: var(--gold);
-    border: 1px solid rgba(242,184,75,.35); border-radius: 999px; padding: 4px 12px; margin-bottom: 22px; }
-  h1 { font-size: clamp(38px, 7vw, 68px); line-height: 1.05; letter-spacing: -.035em; margin: 0 0 18px; font-weight: 700; }
-  h1 .g { color: var(--gold); } h1 .b { color: var(--blue); }
-  .lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 620px; margin: 0 auto 34px; }
+  /* ── hero ───────────────────────────────────────────────── */
+  .hero { position: relative; text-align: center; padding: 108px 0 30px; overflow-x: clip; }
+  .hero::before { content: ""; position: absolute; left: 50%; top: 40px; width: min(1000px, 130vw); height: 560px; transform: translateX(-50%); z-index: -1; filter: blur(24px);
+    background:
+      radial-gradient(closest-side, rgba(242,184,75,.17), transparent 70%) 28% 50% / 60% 100% no-repeat,
+      radial-gradient(closest-side, rgba(110,168,255,.17), transparent 70%) 72% 50% / 60% 100% no-repeat; }
+  .rise { animation: rise .9s var(--ease) both; }
+  .rise.d1 { animation-delay: .08s; } .rise.d2 { animation-delay: .16s; } .rise.d3 { animation-delay: .26s; } .rise.d4 { animation-delay: .38s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+  .badge { display: inline-flex; align-items: center; gap: 8px; font: 500 12px var(--mono); color: var(--gold);
+    border: 1px solid rgba(242,184,75,.35); border-radius: 999px; padding: 5px 13px; margin-bottom: 20px; background: rgba(242,184,75,.06); }
+  .badge i { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 0 rgba(242,184,75,.6); animation: pulse 2s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(242,184,75,0); } 100% { box-shadow: 0 0 0 0 rgba(242,184,75,0); } }
+  h1 { font-size: clamp(40px, 6.8vw, 70px); line-height: 1.02; letter-spacing: -.04em; margin: 0 0 18px; font-weight: 800; }
+  h1 .g { background: linear-gradient(180deg, #ffd98a, var(--gold)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h1 .b { background: linear-gradient(180deg, #a9ccff, var(--blue)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 660px; margin: 0 auto 26px; }
+  .lead strong { color: var(--text); font-weight: 500; }
 
-  /* install box */
-  .install { max-width: 620px; margin: 0 auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; text-align: left; overflow: hidden; }
+  /* install */
+  .install { max-width: 640px; margin: 0 auto; background: rgba(21,27,39,.85); border: 1px solid var(--line); border-radius: 12px; text-align: left; overflow: hidden; backdrop-filter: blur(6px); }
   .tabs { display: flex; border-bottom: 1px solid var(--line); }
-  .tabs button { flex: 0 0 auto; background: none; border: 0; color: var(--muted); font: 500 13px var(--sans);
-    padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tabs button { background: none; border: 0; color: var(--muted); font: 500 13px var(--sans); padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .tabs button[aria-selected="true"] { color: var(--text); border-color: var(--gold); }
   .cmd { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
   .cmd code { flex: 1; font: 14px var(--mono); white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
   .cmd code::before { content: "$ "; color: var(--muted); }
-  .copy { flex: none; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
-    font: 500 12px var(--sans); padding: 6px 12px; cursor: pointer; }
+  .copy { flex: none; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: 500 12px var(--sans); padding: 6px 12px; cursor: pointer; transition: border-color .2s; }
   .copy:hover { border-color: var(--gold); }
+  .hero-note { margin-top: 14px; font-size: 13px; color: var(--muted); }
+  .hero-note kbd { font-size: 11px; }
 
-  /* terminal mock */
-  .term { margin: 56px auto 0; max-width: 1000px; background: #0d1119; border: 1px solid var(--line); border-radius: 12px;
-    box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02); overflow: hidden; font: 13px/1.55 var(--mono); }
-  .term-bar { display: flex; gap: 7px; padding: 11px 14px; background: #121722; border-bottom: 1px solid var(--line); }
-  .term-bar span { width: 11px; height: 11px; border-radius: 50%; background: #2a3140; }
-  .term-body { display: grid; grid-template-columns: 230px 1fr; min-height: 340px; }
-  .side { border-right: 1px solid var(--line); padding: 8px 0; }
-  .side .tabbar { display: flex; gap: 14px; padding: 0 12px 8px; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 6px; }
-  .side .tabbar .on { color: var(--gold); }
-  .side .h { color: var(--muted); padding: 4px 12px; font-size: 11px; letter-spacing: .08em; }
-  .side .row { display: flex; justify-content: space-between; padding: 1px 12px; white-space: nowrap; }
-  .side .row.sel { background: rgba(110,168,255,.14); }
-  .M { color: var(--gold); } .A { color: var(--add-fg); } .D { color: var(--del-fg); }
-  .diff { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; }
-  .diff > div { overflow: hidden; }
-  .diff > div + div { border-left: 1px solid var(--line); }
-  .ln { display: flex; white-space: pre; }
-  .ln b { font-weight: 400; color: #4a5366; width: 34px; text-align: right; padding-right: 10px; flex: none; }
-  .ln.add { background: var(--add-bg); } .ln.del { background: var(--del-bg); }
-  .kw { color: #c678dd; } .fn { color: #61afef; } .st { color: #98c379; } .cm { color: #5c6370; font-style: italic; } .ty { color: #e5c07b; }
+  /* ── the interactive terminal ───────────────────────────── */
+  .term-wrap { margin: 40px auto 0; max-width: 1060px; }
+  .term { position: relative; border-radius: 14px; background: #0c1018; border: 1px solid var(--line); text-align: left; outline: none; user-select: none; -webkit-user-select: none;
+    font: 12px/20px var(--mono); transition: box-shadow .4s, border-color .4s, transform .25s ease-out; will-change: transform;
+    box-shadow: 0 40px 100px -24px rgba(0,0,0,.75), 0 0 90px -36px rgba(242,184,75,.4), 0 0 90px -36px rgba(110,168,255,.4); }
+  .term:focus-visible, .term.active { border-color: rgba(242,184,75,.5); box-shadow: 0 40px 100px -24px rgba(0,0,0,.75), 0 0 0 1px rgba(242,184,75,.25), 0 0 110px -30px rgba(242,184,75,.5), 0 0 110px -30px rgba(110,168,255,.45); }
+  .tbar { position: relative; display: flex; align-items: center; gap: 7px; height: 36px; padding: 0 14px; background: #111621; border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; }
+  .tbar i { width: 11px; height: 11px; border-radius: 50%; background: #3a4152; }
+  .tbar i:nth-child(1) { background: #ff5f57; } .tbar i:nth-child(2) { background: #febc2e; } .tbar i:nth-child(3) { background: #28c840; }
+  .tbar .ttl { position: absolute; left: 50%; transform: translateX(-50%); color: var(--muted); font-size: 12px; pointer-events: none; white-space: nowrap; }
+  .tb-btns { margin-left: auto; display: flex; gap: 6px; position: relative; z-index: 1; }
+  .tb-btns button { background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--muted); border-radius: 6px; font: 11px var(--mono); padding: 1px 9px; height: 22px; cursor: pointer; transition: color .2s, border-color .2s; }
+  .tb-btns button:hover { color: var(--text); border-color: var(--gold); }
 
-  section { padding: 90px 0 0; }
-  h2 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -.03em; margin: 0 0 12px; }
-  .sub { color: var(--muted); margin: 0 0 40px; max-width: 560px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
-  .card h3 { margin: 12px 0 6px; font-size: 17px; }
-  .card p { margin: 0; color: var(--muted); font-size: 15px; }
-  .ico { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font: 600 15px var(--mono); }
-  .ico.g { background: rgba(242,184,75,.14); color: var(--gold); }
-  .ico.b { background: rgba(110,168,255,.14); color: var(--blue); }
+  .screen { display: grid; grid-template-columns: 262px minmax(0, 1fr); height: 440px; overflow: hidden; }
+  .screen.nosb { grid-template-columns: 0 minmax(0, 1fr); }
+  .screen.nosb .side { display: none; }
+  .side { border-right: 1px solid var(--line); overflow: hidden auto; padding-bottom: 8px; scrollbar-width: none; position: relative; }
+  .side::-webkit-scrollbar { display: none; }
+  .side.focus { box-shadow: inset 0 2px 0 var(--gold); }
+  .vtabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .vtabs button { flex: 1; background: none; border: 0; color: var(--muted); font: inherit; height: 28px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .vtabs button:hover { color: var(--text); }
+  .vtabs button.on { color: var(--gold); border-color: var(--gold); }
+  .cbox { margin: 0 8px 8px; display: flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 6px; padding: 0 3px 0 8px; height: 28px; background: #0a0e15; cursor: text; }
+  .cbox.focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(242,184,75,.12); }
+  .cbox .txt { flex: 1; overflow: hidden; white-space: nowrap; min-width: 0; }
+  .cbox .ph { color: #566078; }
+  .cbox .run { color: var(--gold); }
+  .caret { display: inline-block; width: 7px; height: 14px; background: var(--gold); vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .spin { display: inline-block; animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .cbtn { flex: none; width: 22px; height: 22px; border-radius: 4px; border: 0; background: none; cursor: pointer; color: var(--gold); font: inherit; padding: 0; }
+  .cbtn:hover { background: rgba(255,255,255,.08); }
+  .cbtn.ok { color: var(--add-fg); }
+  .cbtn.dis { color: #3b4456; cursor: not-allowed; }
+  .cbtn.dis:hover { background: none; }
+  .sh { display: flex; justify-content: space-between; padding: 0 12px; margin-top: 4px; color: var(--muted); font-size: 10.5px; letter-spacing: .09em; }
+  .it { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 12px; height: 20px; cursor: pointer; white-space: nowrap; }
+  .it:hover { background: rgba(255,255,255,.04); }
+  .it.sel { background: rgba(110,168,255,.10); }
+  .side.focus .it.sel { background: rgba(110,168,255,.24); }
+  .it .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .it .nm em { color: var(--muted); font-style: normal; margin-left: 6px; font-size: 11px; }
+  .it .dim { color: var(--muted); font-size: 11px; flex: none; }
+  .ib { display: inline-block; width: 2ch; margin-right: 8px; font-style: normal; font-size: 10px; font-weight: 700; text-align: center; letter-spacing: -.04em; }
+  .none { padding: 4px 12px; color: var(--muted); font-size: 11px; }
+  .M { color: var(--gold); } .A, .U { color: var(--add-fg); } .D { color: var(--del-fg); }
+  .nm.M { color: var(--gold); } .nm.A, .nm.U { color: var(--add-fg); } .nm.D { color: var(--del-fg); }
 
-  .keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 32px; }
-  .key { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); gap: 12px; }
-  .key span { color: var(--muted); }
-  kbd { font: 12px var(--mono); background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .mh { display: flex; justify-content: space-between; align-items: center; gap: 12px; height: 28px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--muted); flex: none; white-space: nowrap; overflow: hidden; }
+  .mh b { color: var(--text); font-weight: 500; }
+  .mh .r { flex: none; }
+  .main.focus .mh { box-shadow: inset 0 2px 0 var(--gold); }
+  .pane { flex: 1; overflow: auto; position: relative; scrollbar-width: thin; scrollbar-color: #2a3140 transparent; }
+  .rows { min-width: 100%; }
+  .dr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); height: 20px; }
+  .dc { display: flex; white-space: pre; overflow: hidden; }
+  .dc + .dc { border-left: 1px solid var(--line); }
+  .n { flex: none; width: 38px; text-align: right; padding-right: 10px; color: #4a5366; font-weight: 400; }
+  .dc.del { background: var(--del-bg); } .dc.add { background: var(--add-bg); }
+  .dc.ghost { background: repeating-linear-gradient(135deg, transparent 0 5px, rgba(255,255,255,.03) 5px 10px); }
+  .dr.cur .dc:first-child { box-shadow: inset 2px 0 0 var(--gold); }
+  .fr { display: flex; white-space: pre; height: 20px; }
+  .empty { height: 100%; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 20px; }
+  .empty svg { width: 34px; height: 34px; margin-bottom: 8px; opacity: .8; }
+  .kw { color: #c678dd; } .fn { color: #61afef; } .st { color: #98c379; } .cm { color: #5c6370; font-style: italic; } .ty { color: #e5c07b; } .nu { color: #d19a66; }
 
-  .story { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: center; }
-  .story svg { width: 100%; max-width: 380px; display: block; margin: 0 auto; }
-  .story p { color: var(--muted); }
-  .story em { color: var(--text); font-style: normal; }
+  .sbar { display: flex; align-items: center; gap: 12px; height: 28px; padding: 0 10px; background: #111621; border-top: 1px solid var(--line); border-radius: 0 0 14px 14px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; }
+  .sbar .br { color: var(--blue); flex: none; }
+  .hints { flex: 1; min-width: 0; display: flex; gap: 14px; overflow: hidden; }
+  .hint { cursor: pointer; flex: none; transition: color .2s; }
+  .hint:hover { color: var(--text); }
+  .hint kbd { font-size: 10px; padding: 0 5px; }
+  .msg { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .msg.ok { color: var(--add-fg); } .msg.err { color: var(--del-fg); }
 
-  .cta { text-align: center; padding: 100px 0 40px; }
-  .btn { display: inline-block; background: var(--gold); color: #1a1406; font-weight: 600; text-decoration: none;
-    padding: 12px 22px; border-radius: 10px; margin: 6px; }
-  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .echo { position: absolute; right: 16px; bottom: 44px; display: flex; flex-direction: column-reverse; align-items: flex-end; gap: 6px; pointer-events: none; z-index: 3; }
+  .echo kbd { font-size: 14px; padding: 4px 12px; background: rgba(10,13,20,.92); border-color: rgba(242,184,75,.5); color: var(--gold); box-shadow: 0 8px 24px rgba(0,0,0,.5); animation: echo 1.5s var(--ease) forwards; }
+  @keyframes echo { 0% { opacity: 0; transform: translateY(8px) scale(.9); } 12% { opacity: 1; transform: none; } 75% { opacity: 1; } 100% { opacity: 0; transform: translateY(-6px); } }
+
+  .cap { margin: 18px 0 0; text-align: center; color: var(--muted); font-size: 14px; min-height: 26px; }
+  .cap .live { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #ff6363; margin-right: 8px; animation: pulse 2s infinite; vertical-align: 1px; }
+  .cap kbd { margin: 0 2px; }
+
+  kbd { font: 12px var(--mono); background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 2px 8px; white-space: nowrap; color: var(--text); }
+
+  /* facts strip */
+  .facts { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 38px; margin-top: 70px; padding: 22px 0; border-block: 1px solid var(--line); font: 500 13px var(--mono); color: var(--muted); }
+  .facts span::before { content: "◆ "; color: var(--gold); font-size: 9px; vertical-align: 1px; }
+  .facts span:nth-child(even)::before { color: var(--blue); }
+
+  /* ── scroll story ───────────────────────────────────────── */
+  .story { position: relative; height: 430vh; margin-top: 40px; }
+  .pin { position: sticky; top: 0; height: 100vh; overflow: hidden; display: grid; place-items: center; }
+  .stage { position: relative; width: min(94vw, 940px); height: min(66vh, 560px); margin-top: -8vh; }
+  .const { --W: min(84vw, 580px); position: absolute; width: var(--W); height: var(--W); left: calc(50% - var(--W) * .18); top: calc(50% - var(--W) * .82); transform-origin: 18% 82%; will-change: transform, opacity; overflow: visible; }
+  .const text { font: 2.5px var(--mono); fill: rgba(230,233,240,.55); }
+  .const text.hi { fill: var(--gold); font-size: 3px; }
+  .orb { position: absolute; left: 50%; top: 50%; border-radius: 50%; mix-blend-mode: screen; will-change: transform, width, height, opacity; opacity: 0; }
+  .orb.gold { background: radial-gradient(circle, #fff6dc 0, #f2b84b 26%, rgba(242,184,75,.4) 52%, transparent 72%); }
+  .orb.blue { background: radial-gradient(circle, #eef5ff 0, #6ea8ff 26%, rgba(110,168,255,.4) 52%, transparent 72%); }
+  .pn { position: absolute; left: 50%; top: 50%; border-radius: 12px; background: rgba(12,16,24,.92); border: 1px solid var(--line); overflow: hidden; opacity: 0; font: 12px/20px var(--mono); will-change: transform, opacity; box-shadow: 0 30px 70px -20px rgba(0,0,0,.7); }
+  .pn.old { border-color: rgba(242,184,75,.45); box-shadow: 0 30px 70px -20px rgba(0,0,0,.7), 0 0 60px -22px rgba(242,184,75,.6); }
+  .pn.new { border-color: rgba(110,168,255,.45); box-shadow: 0 30px 70px -20px rgba(0,0,0,.7), 0 0 60px -22px rgba(110,168,255,.6); }
+  .pn-h { display: flex; justify-content: space-between; padding: 0 12px; height: 28px; align-items: center; border-bottom: 1px solid var(--line); font-size: 11px; letter-spacing: .06em; color: var(--muted); }
+  .pn.old .pn-h span:first-child { color: var(--gold); } .pn.new .pn-h span:first-child { color: var(--blue); }
+  .pl { display: flex; white-space: pre; overflow: hidden; }
+  .pl.del { background: var(--del-bg); } .pl.add { background: var(--add-bg); }
+  .caps { position: absolute; left: 0; right: 0; bottom: 7vh; height: 170px; padding: 0 20px; text-align: center; }
+  .capn { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 20px; opacity: 0; transform: translateY(14px); transition: opacity .55s var(--ease), transform .55s var(--ease); pointer-events: none; }
+  .capn.on { opacity: 1; transform: none; pointer-events: auto; }
+  .capn small { display: block; font: 500 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gold); margin-bottom: 10px; }
+  .capn h2 { font-size: clamp(26px, 4.6vw, 46px); letter-spacing: -.035em; line-height: 1.08; margin: 0 0 10px; font-weight: 800; }
+  .capn p { margin: 0 auto; max-width: 520px; color: var(--muted); }
+  .capn .btn { margin-top: 20px; }
+  .dots { position: absolute; right: 22px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: #2a3140; transition: background .3s, transform .3s; }
+  .dots i.on { background: var(--gold); transform: scale(1.5); }
+
+  /* ── sections ───────────────────────────────────────────── */
+  .sec { padding: 110px 0 0; }
+  .eyebrow { font: 500 12px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--gold); margin: 0 0 14px; }
+  h2 { font-size: clamp(30px, 4.4vw, 46px); letter-spacing: -.035em; line-height: 1.08; margin: 0 0 14px; font-weight: 800; }
+  .sub { color: var(--muted); margin: 0 0 44px; max-width: 580px; font-size: 17px; }
+  .rv { opacity: 0; transform: translateY(26px); transition: opacity .8s var(--ease), transform .8s var(--ease); }
+  .rv.in { opacity: 1; transform: none; }
+
+  /* bento */
+  .bento { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; }
+  .bc { --mx: 50%; --my: 0%; position: relative; grid-column: span 2; background: linear-gradient(180deg, rgba(21,27,39,.86), rgba(15,20,30,.86)); border: 1px solid var(--line); border-radius: 18px; padding: 24px; overflow: hidden; transition: border-color .3s; }
+  .bc::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .35s; background: radial-gradient(420px circle at var(--mx) var(--my), rgba(242,184,75,.11), rgba(110,168,255,.05) 45%, transparent 70%); }
+  .bc:hover::before { opacity: 1; }
+  .bc:hover { border-color: #33405a; }
+  .bc.w4 { grid-column: span 4; } .bc.w3 { grid-column: span 3; }
+  .bc h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -.01em; position: relative; }
+  .bc p { margin: 0; color: var(--muted); font-size: 15px; position: relative; }
+  .bc p kbd { font-size: 11px; }
+  .viz { position: relative; margin-top: 20px; background: #0b0f17; border: 1px solid var(--line); border-radius: 10px; padding: 10px 0; font: 12px/20px var(--mono); overflow: hidden; user-select: none; -webkit-user-select: none; }
+  .viz .row { display: flex; justify-content: space-between; gap: 10px; padding: 0 12px; white-space: nowrap; }
+  .viz .dim { color: var(--muted); }
+
+  .vd { display: grid; grid-template-columns: 1fr 1fr; }
+  .vd > div + div { border-left: 1px solid var(--line); }
+  .vd .l { display: flex; white-space: pre; padding: 0 10px; overflow: hidden; }
+  .vd .l.del { background: var(--del-bg); } .vd .l.add { background: var(--add-bg); }
+  .vd .l b { color: #4a5366; font-weight: 400; width: 24px; flex: none; }
+  .hk { animation: hk 6s infinite; } .hk.b2 { animation-delay: -3s; }
+  @keyframes hk { 0%, 42% { box-shadow: inset 2px 0 0 var(--gold); } 50%, 100% { box-shadow: inset 2px 0 0 transparent; } }
+  .chip { position: absolute; right: 10px; top: 8px; font-size: 10.5px; color: var(--gold); border: 1px solid rgba(242,184,75,.35); border-radius: 999px; padding: 0 9px; background: #0b0f17; z-index: 1; }
+  .sr .tag { font-size: 11px; padding: 0 8px; border-radius: 999px; transition: all .3s; color: var(--gold); background: rgba(242,184,75,.1); }
+  .sr.staged .tag { color: var(--add-fg); background: rgba(80,200,120,.14); }
+  .sr { transition: transform .3s var(--ease); }
+  .hist .row { align-items: center; }
+  .hist .g1 { position: relative; padding-left: 18px; }
+  .hist .g1::before { content: ""; position: absolute; left: 3px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 10px var(--gold); }
+  .hist .g1::after { content: ""; position: absolute; left: 6px; top: 16px; width: 1px; height: 24px; background: var(--line); }
+  .hist .row:last-child .g1::after { display: none; }
+  .ev { animation: evin .5s var(--ease); }
+  @keyframes evin { from { opacity: 0; transform: translateY(-10px); background: rgba(242,184,75,.16); } to { opacity: 1; transform: none; background: transparent; } }
+  .split { display: grid; grid-template-columns: var(--w, 38%) 8px 1fr; height: 128px; }
+  .split > div { padding: 6px 12px; overflow: hidden; white-space: nowrap; }
+  .grip { cursor: col-resize; touch-action: none; background: var(--line); position: relative; padding: 0 !important; transition: background .2s; }
+  .grip::after { content: ""; position: absolute; left: 2px; top: 50%; width: 4px; height: 26px; margin-top: -13px; border-radius: 3px; background: var(--muted); }
+  .grip:hover, .grip.drag { background: var(--gold); } .grip:hover::after, .grip.drag::after { background: #1a1406; }
+  .aibox { margin: 0 10px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 6px; height: 30px; padding: 0 10px; background: #0a0e15; }
+  .aibox .typed { flex: 1; overflow: hidden; white-space: nowrap; }
+
+  /* use cases */
+  .uses { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .use { position: relative; padding: 28px; border-radius: 18px; border: 1px solid var(--line); background: rgba(21,27,39,.55); overflow: hidden; }
+  .use .num { font: 800 64px/1 var(--sans); letter-spacing: -.05em; background: linear-gradient(180deg, rgba(242,184,75,.55), rgba(110,168,255,.05)); -webkit-background-clip: text; background-clip: text; color: transparent; margin-bottom: 14px; }
+  .use:nth-child(2) .num { background-image: linear-gradient(180deg, rgba(110,168,255,.55), rgba(242,184,75,.05)); }
+  .use h3 { margin: 0 0 8px; font-size: 20px; letter-spacing: -.02em; }
+  .use p { margin: 0; color: var(--muted); font-size: 15px; }
+  .use code { font: 13px var(--mono); color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+
+  /* keys */
+  .kgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .kg { border: 1px solid var(--line); border-radius: 18px; background: rgba(21,27,39,.55); padding: 8px 22px 14px; }
+  .kg h3 { font: 500 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gold); margin: 16px 0 6px; }
+  .kr { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(35,43,58,.7); font-size: 14.5px; }
+  .kr:last-child { border: 0; }
+  .kr > span { color: var(--muted); }
+  .kr > div { display: flex; gap: 5px; flex: none; }
+  .cap-k { min-width: 30px; height: 30px; display: inline-grid; place-items: center; padding: 0 8px; font: 500 12.5px var(--mono); color: var(--text); background: linear-gradient(180deg, #1b2333, #151b27); border: 1px solid #2c3648; border-bottom-width: 4px; border-radius: 8px; transition: transform .08s, border-bottom-width .08s, background .2s, color .2s, border-color .2s, box-shadow .2s; }
+  .cap-k.pressed { transform: translateY(3px); border-bottom-width: 1px; color: #1a1406; background: var(--gold); border-color: var(--gold); box-shadow: 0 0 24px rgba(242,184,75,.55); }
+  .ktip { margin-top: 18px; text-align: center; color: var(--muted); font-size: 14px; }
+
+  /* CTA */
+  .cta { position: relative; text-align: center; padding: 140px 0 40px; overflow-x: clip; }
+  .cta::before { content: ""; position: absolute; left: 50%; top: 40px; width: min(900px, 130vw); height: 520px; transform: translateX(-50%); z-index: -1; filter: blur(30px);
+    background:
+      radial-gradient(closest-side, rgba(242,184,75,.2), transparent 70%) 36% 50% / 55% 100% no-repeat,
+      radial-gradient(closest-side, rgba(110,168,255,.2), transparent 70%) 64% 50% / 45% 100% no-repeat; }
+  .cta h2 { font-size: clamp(38px, 6.4vw, 72px); }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; max-width: 760px; margin: 0 auto 34px; text-align: left; }
+  .step { border: 1px solid var(--line); background: rgba(21,27,39,.7); border-radius: 12px; padding: 14px 16px; font: 13px var(--mono); }
+  .step small { display: block; font: 500 11px var(--sans); color: var(--gold); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 6px; }
+  .step code::before { content: "$ "; color: var(--muted); }
+  .step .cur { display: inline-block; width: 8px; height: 15px; background: var(--gold); vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+  .cta .install { margin-bottom: 26px; }
+  .btn { display: inline-block; background: var(--gold); color: #1a1406; font-weight: 600; text-decoration: none; padding: 12px 22px; border-radius: 10px; margin: 6px; transition: transform .2s var(--ease), box-shadow .2s; box-shadow: 0 8px 30px -8px rgba(242,184,75,.6); }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 12px 36px -8px rgba(242,184,75,.75); }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); box-shadow: none; }
   .btn.ghost:hover { border-color: var(--blue); }
-  footer { color: var(--muted); font-size: 14px; text-align: center; padding: 40px 0 50px; border-top: 1px solid var(--line); margin-top: 60px; }
+  .req { color: var(--muted); font-size: 14px; margin-top: 10px; }
+  footer { color: var(--muted); font-size: 14px; text-align: center; padding: 40px 0 50px; border-top: 1px solid var(--line); margin-top: 80px; }
+  footer a { text-decoration: none; } footer a:hover { color: var(--text); }
 
-  @media (max-width: 760px) {
-    .nav-links a.hide-sm { display: none; }
-    header.hero { padding-top: 36px; }
-    .term-body { grid-template-columns: 1fr; }
-    .side { display: none; }
-    .diff > div + div { display: none; }
-    .story { grid-template-columns: 1fr; gap: 24px; }
+  /* ── responsive ─────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .bento { grid-template-columns: repeat(2, 1fr); }
+    .bc, .bc.w3 { grid-column: span 1; } .bc.w4 { grid-column: span 2; }
+    .uses, .kgrid, .steps { grid-template-columns: 1fr; }
+    .dots { display: none; }
   }
-  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  @media (max-width: 760px) {
+    .nav-links a:not(.gh) { display: none; }
+    .hero { padding-top: 104px; }
+    .term-wrap { margin-top: 44px; }
+    .screen { grid-template-columns: 1fr; grid-template-rows: 172px minmax(0, 1fr); height: 470px; }
+    .side { border-right: 0; border-bottom: 1px solid var(--line); }
+    .rows { min-width: 560px; }
+    .tbar .ttl { display: none; }
+    .term { font-size: 11.5px; }
+    .hints .hint:nth-child(n+4) { display: none; }
+    .bento { grid-template-columns: 1fr; }
+    .bc, .bc.w3, .bc.w4 { grid-column: span 1; }
+    .vd { grid-template-columns: 1fr; }
+    .vd > div + div { display: none; }
+    .chip { display: none; }
+    .sec { padding-top: 84px; }
+    .pn { font-size: 9.5px; line-height: 17px; }
+    .pn-h { height: 24px; font-size: 9.5px; padding: 0 8px; }
+    .const { --W: 96vw; }
+    .facts { margin-top: 50px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .rise, .badge i, .cap .live, .hk, .caret, .spin, .step .cur { animation: none; }
+    .rv { opacity: 1; transform: none; transition: none; }
+    .capn { transition: none; }
+  }
 </style>
 </head>
 <body>
-<div class="sky" id="sky"></div>
+<div class="nebula"></div>
+<canvas id="sky" aria-hidden="true"></canvas>
+<div class="progress" id="progress"></div>
 
-<div class="wrap">
-  <nav>
-    <a class="logo" href="#">
+<nav class="nav" id="nav">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="auri home">
       <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="12" cy="16" r="7" fill="#f2b84b"/><circle cx="23.5" cy="16" r="4" fill="#6ea8ff"/></svg>
       auri
     </a>
     <div class="nav-links">
-      <a class="hide-sm" href="#features">Features</a>
-      <a class="hide-sm" href="#keys">Keys</a>
-      <a href="https://github.com/matheusz-nied/auri-tui">GitHub</a>
+      <a href="#story">Why “auri”</a>
+      <a href="#features">Features</a>
+      <a href="#uses">Use cases</a>
+      <a href="#keys">Keys</a>
+      <a href="#install">Install</a>
+      <a class="gh" href="https://github.com/matheusz-nied/auri-tui">GitHub ↗</a>
     </div>
-  </nav>
+  </div>
+</nav>
 
-  <header class="hero">
-    <div class="badge">v0.1.0 · macOS &amp; Linux</div>
-    <h1>See what <span class="g">changed</span>.<br>Right in your <span class="b">terminal</span>.</h1>
-    <p class="lead">auri is a small, fast terminal UI to browse your files and git diffs side by side. No editor, no browser — just open it and look.</p>
+<main id="top">
+<!-- ═══════════════ HERO ═══════════════ -->
+<header class="hero">
+  <div class="wrap">
+    <div class="badge rise"><i></i>v0.1.0 · macOS &amp; Linux</div>
+    <h1 class="rise d1">See what <span class="g">changed</span>.<br>Right in your <span class="b">terminal</span>.</h1>
+    <p class="lead rise d2">auri is a fast terminal UI to <strong>explore your repo</strong> and <strong>review git diffs side by side</strong>. No editor to open, no browser tab to switch to — just look.</p>
 
-    <div class="install">
+    <div class="install rise d3" data-install>
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected="true" data-cmd="curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh">Shell</button>
         <button role="tab" aria-selected="false" data-cmd="cargo install auri-tui">Cargo</button>
       </div>
       <div class="cmd">
-        <code id="cmd">curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh</code>
-        <button class="copy" id="copy">Copy</button>
+        <code>curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh</code>
+        <button class="copy" type="button">Copy</button>
       </div>
     </div>
+    <p class="hero-note rise d3">Then run <kbd>auri</kbd> inside any git repository.</p>
 
-    <div class="term" aria-label="auri showing a side-by-side diff">
-      <div class="term-bar"><span></span><span></span><span></span></div>
-      <div class="term-body">
-        <div class="side">
-          <div class="tabbar"><span>Explorer</span><span class="on">Source Control</span></div>
-          <div class="h">STAGED</div>
-          <div class="row"><span>README.md</span><span class="A">A</span></div>
-          <div class="h">CHANGES</div>
-          <div class="row sel"><span>src/orbit.rs</span><span class="M">M</span></div>
-          <div class="row"><span>src/star.rs</span><span class="M">M</span></div>
-          <div class="row"><span>legacy/old.rs</span><span class="D">D</span></div>
-          <div class="h">HISTORY</div>
-          <div class="row"><span class="M">a1f3c9e</span><span style="color:var(--muted)">feat: parallax</span></div>
-          <div class="row"><span class="M">7bd20e4</span><span style="color:var(--muted)">fix: epoch</span></div>
+    <div class="term-wrap rise d4" id="termWrap">
+      <div class="term" id="term" tabindex="0" role="group" aria-label="Interactive demo of auri. Click it, then use j, k, space, n and c to try it.">
+        <div class="tbar">
+          <i></i><i></i><i></i>
+          <span class="ttl">auri — ~/code/orbit</span>
+          <span class="tb-btns"><button type="button" data-act="demo">▶ demo</button><button type="button" data-act="reset">↻ reset</button></span>
         </div>
-        <div class="diff">
-          <div>
-<div class="ln"><b>1</b><span class="kw">use</span> crate::<span class="ty">Star</span>;</div>
-<div class="ln"><b>2</b></div>
-<div class="ln"><b>3</b><span class="cm">/// Distance in parsecs.</span></div>
-<div class="ln del"><b>4</b><span class="kw">pub fn</span> <span class="fn">distance</span>(p: <span class="ty">f64</span>) -&gt; <span class="ty">f64</span> {</div>
-<div class="ln del"><b>5</b>    <span class="ty">1.0</span> / p</div>
-<div class="ln"><b>6</b>}</div>
-<div class="ln"><b>7</b></div>
-<div class="ln"><b>8</b><span class="kw">pub fn</span> <span class="fn">name</span>(s: &amp;<span class="ty">Star</span>) -&gt; &amp;<span class="ty">str</span> {</div>
-<div class="ln del"><b>9</b>    <span class="st">"unknown"</span></div>
-<div class="ln"><b>10</b>}</div>
-<div class="ln"><b></b></div>
-<div class="ln"><b></b></div>
-          </div>
-          <div>
-<div class="ln"><b>1</b><span class="kw">use</span> crate::<span class="ty">Star</span>;</div>
-<div class="ln"><b>2</b></div>
-<div class="ln"><b>3</b><span class="cm">/// Distance in parsecs.</span></div>
-<div class="ln add"><b>4</b><span class="kw">pub fn</span> <span class="fn">distance</span>(arcsec: <span class="ty">f64</span>) -&gt; <span class="ty">Option</span>&lt;<span class="ty">f64</span>&gt; {</div>
-<div class="ln add"><b>5</b>    (arcsec &gt; <span class="ty">0.0</span>).<span class="fn">then</span>(|| <span class="ty">1.0</span> / arcsec)</div>
-<div class="ln"><b>6</b>}</div>
-<div class="ln"><b>7</b></div>
-<div class="ln"><b>8</b><span class="kw">pub fn</span> <span class="fn">name</span>(s: &amp;<span class="ty">Star</span>) -&gt; &amp;<span class="ty">str</span> {</div>
-<div class="ln add"><b>9</b>    &amp;s.name</div>
-<div class="ln"><b>10</b>}</div>
-<div class="ln"><b></b></div>
-<div class="ln"><b></b></div>
-          </div>
+        <div class="screen" id="screen" aria-hidden="true">
+          <div class="side" id="side"></div>
+          <div class="main" id="main"><div class="mh" id="mh"></div><div class="pane" id="pane"></div></div>
         </div>
+        <div class="sbar" id="sbar" aria-hidden="true"></div>
+        <div class="echo" id="echo" aria-hidden="true"></div>
       </div>
+      <p class="cap" id="cap"></p>
     </div>
-  </header>
 
-  <section id="features">
-    <h2>Everything you need to read a repo</h2>
-    <p class="sub">And nothing you don't. auri isn't an editor — it's a place to look at your code and what changed in it.</p>
-    <div class="grid">
-      <div class="card"><div class="ico g">⇆</div><h3>Side-by-side diffs</h3><p>Old and new, next to each other, with syntax highlighting. Jump between changes with <kbd>n</kbd> / <kbd>N</kbd>.</p></div>
-      <div class="card"><div class="ico b">▤</div><h3>File explorer</h3><p>A lazy file tree with git status on every row and a highlighted, read-only file viewer.</p></div>
-      <div class="card"><div class="ico g">±</div><h3>Stage &amp; commit</h3><p>Stage, unstage and discard changes, write a message and commit — without leaving the view.</p></div>
-      <div class="card"><div class="ico b">◷</div><h3>History</h3><p>Browse past commits and open the diff of any file they touched.</p></div>
-      <div class="card"><div class="ico g">✦</div><h3>AI commit drafts</h3><p>Optional: <kbd>Ctrl-G</kbd> drafts a message from your staged diff with Codex CLI or opencode. It never commits for you.</p></div>
-      <div class="card"><div class="ico b">◐</div><h3>Keyboard or mouse</h3><p>Vim-style keys, clickable buttons and tabs, draggable dividers. Your layout is remembered.</p></div>
+    <div class="facts rv">
+      <span>Single Rust binary</span><span>Uses your own git</span><span>Keyboard &amp; mouse</span><span>MIT licensed</span>
     </div>
-  </section>
-
-  <section id="keys">
-    <h2>A handful of keys</h2>
-    <p class="sub">Run <kbd>auri</kbd> inside any git repository. <kbd>auri --help</kbd> prints the essentials.</p>
-    <div class="keys">
-      <div class="key"><span>Explorer</span><kbd>e</kbd></div>
-      <div class="key"><span>Source control</span><kbd>c</kbd></div>
-      <div class="key"><span>Focus the file / diff</span><kbd>2</kbd></div>
-      <div class="key"><span>Move</span><kbd>j</kbd> <kbd>k</kbd></div>
-      <div class="key"><span>Stage / unstage</span><kbd>space</kbd></div>
-      <div class="key"><span>Next change</span><kbd>n</kbd></div>
-      <div class="key"><span>Toggle sidebar</span><kbd>b</kbd></div>
-      <div class="key"><span>Resize sidebar</span><kbd>[</kbd> <kbd>]</kbd></div>
-      <div class="key"><span>Quit</span><kbd>q</kbd></div>
-    </div>
-  </section>
-
-  <section>
-    <div class="story">
-      <svg viewBox="0 0 380 240" aria-label="Albireo: a gold star and a blue star">
-        <defs>
-          <radialGradient id="gold"><stop offset="0" stop-color="#fff4d6"/><stop offset=".35" stop-color="#f2b84b"/><stop offset="1" stop-color="#f2b84b" stop-opacity="0"/></radialGradient>
-          <radialGradient id="blue"><stop offset="0" stop-color="#eaf2ff"/><stop offset=".35" stop-color="#6ea8ff"/><stop offset="1" stop-color="#6ea8ff" stop-opacity="0"/></radialGradient>
-        </defs>
-        <circle cx="140" cy="120" r="90" fill="url(#gold)"/>
-        <circle cx="265" cy="118" r="55" fill="url(#blue)"/>
-      </svg>
-      <div>
-        <h2>Why “auri”?</h2>
-        <p><em>Auri</em> is Latin for <em>of gold</em>. Look at Albireo, in the constellation Cygnus, through a small telescope and one star becomes two: a golden one and a blue one, side by side.</p>
-        <p>Two views of the same spot, each showing what the other doesn't. That's what a diff is.</p>
-      </div>
-    </div>
-  </section>
-
-  <div class="cta">
-    <h2>Take a look.</h2>
-    <p class="sub" style="margin: 0 auto 26px">Free and open source, MIT licensed.</p>
-    <a class="btn" href="#">Install auri</a>
-    <a class="btn ghost" href="https://github.com/matheusz-nied/auri-tui">Star on GitHub</a>
   </div>
+</header>
 
-  <footer>
-    auri · MIT · <a href="https://github.com/matheusz-nied/auri-tui/releases">Releases</a> · <a href="https://github.com/matheusz-nied/auri-tui/blob/main/CHANGELOG.md">Changelog</a>
-  </footer>
-</div>
+<!-- ═══════════════ SCROLL STORY ═══════════════ -->
+<section class="story" id="story" aria-label="Why the name auri: Albireo, a double star, is a diff between two views">
+  <div class="pin">
+    <div class="stage" id="stage">
+      <svg class="const" id="const" viewBox="0 0 100 100" aria-hidden="true">
+        <defs><radialGradient id="alb"><stop offset="0" stop-color="#fff6dc"/><stop offset=".3" stop-color="#f5d48a"/><stop offset="1" stop-color="#f2b84b" stop-opacity="0"/></radialGradient></defs>
+        <g stroke="rgba(230,233,240,.28)" stroke-width="1" fill="none" vector-effect="non-scaling-stroke">
+          <path vector-effect="non-scaling-stroke" d="M80 10 L52 42 L18 82"/>
+          <path vector-effect="non-scaling-stroke" d="M31 24 L52 42 L73 60"/>
+        </g>
+        <g fill="#fff">
+          <circle cx="80" cy="10" r="1.3" opacity=".9"/><circle cx="52" cy="42" r="1.1" opacity=".85"/>
+          <circle cx="31" cy="24" r=".8" opacity=".7"/><circle cx="73" cy="60" r=".8" opacity=".7"/>
+          <circle cx="8" cy="20" r=".35" opacity=".5"/><circle cx="90" cy="34" r=".3" opacity=".5"/><circle cx="62" cy="88" r=".35" opacity=".5"/>
+          <circle cx="40" cy="64" r=".3" opacity=".5"/><circle cx="14" cy="52" r=".3" opacity=".4"/><circle cx="88" cy="80" r=".35" opacity=".5"/>
+        </g>
+        <circle cx="18" cy="82" r="2.6" fill="url(#alb)"/>
+        <g class="lbl" id="lbl"><text x="82.5" y="9">Deneb</text><text x="54.5" y="41">Sadr</text><text class="hi" x="21" y="80.5">Albireo</text></g>
+      </svg>
+      <div class="orb gold" id="orbG"></div>
+      <div class="orb blue" id="orbB"></div>
+      <div class="pn old" id="pnOld"></div>
+      <div class="pn new" id="pnNew"></div>
+    </div>
+    <div class="caps" id="caps">
+      <div class="capn on"><small>01 — Cygnus</small><h2>Look up. One point of light.</h2><p>At the beak of the Swan sits a star that looks like just one.</p></div>
+      <div class="capn"><small>02 — Albireo</small><h2>Look closer. It’s <span class="g">two</span>.</h2><p>Through a small telescope the point splits: a <span class="g">golden</span> star and a <span class="b">blue</span> one, side by side.</p></div>
+      <div class="capn"><small>03 — Two views</small><h2>Same spot. Two views.</h2><p>Each one shows what the other doesn’t. Put them next to each other and the difference is obvious.</p></div>
+      <div class="capn"><small>04 — auri</small><h2>That’s a diff. That’s <span class="g">auri</span>.</h2><p><em style="font-style:normal;color:var(--text)">Auri</em> is Latin for <em style="font-style:normal;color:var(--text)">of gold</em>. A terminal UI for seeing exactly what changed.</p><a class="btn" href="#install">Install auri ↓</a></div>
+    </div>
+    <div class="dots" id="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i></div>
+  </div>
+</section>
+
+<!-- ═══════════════ FEATURES ═══════════════ -->
+<section class="sec" id="features">
+  <div class="wrap">
+    <p class="eyebrow rv">Features</p>
+    <h2 class="rv">Everything you need to read a repo.</h2>
+    <p class="sub rv">And nothing you don’t. auri isn’t an editor — it’s the place you go to look at your code and what changed in it.</p>
+
+    <div class="bento">
+      <article class="bc w4 rv">
+        <h3>Side-by-side diffs</h3>
+        <p>Old on the left, new on the right, highlighted with the same grammars <code style="font:12px var(--mono)">bat</code> uses. Jump straight to the next change with <kbd>n</kbd> / <kbd>N</kbd>.</p>
+        <div class="viz" aria-hidden="true">
+          <span class="chip">▸ change 1/2</span>
+          <div class="vd">
+            <div>
+              <div class="l"><b>3</b><span><span class="cm">/// Distance in parsecs.</span></span></div>
+              <div class="l del hk"><b>4</b><span><span class="kw">pub fn</span> <span class="fn">distance</span>(p: <span class="ty">f64</span>) -&gt; <span class="ty">f64</span> {</span></div>
+              <div class="l del hk"><b>5</b><span>    <span class="nu">1.0</span> / p</span></div>
+              <div class="l"><b>6</b><span>}</span></div>
+              <div class="l"><b>7</b><span></span></div>
+              <div class="l del hk b2"><b>8</b><span><span class="kw">pub fn</span> <span class="fn">name</span>(s: &amp;<span class="ty">Star</span>) -&gt; &amp;<span class="ty">str</span> {</span></div>
+              <div class="l del hk b2"><b>9</b><span>    <span class="st">"unknown"</span></span></div>
+            </div>
+            <div>
+              <div class="l"><b>3</b><span><span class="cm">/// Distance in parsecs.</span></span></div>
+              <div class="l add hk"><b>4</b><span><span class="kw">pub fn</span> <span class="fn">distance</span>(px: <span class="ty">f64</span>) -&gt; <span class="ty">Option</span>&lt;<span class="ty">f64</span>&gt; {</span></div>
+              <div class="l add hk"><b>5</b><span>    (px &gt; <span class="nu">0.0</span>).<span class="fn">then</span>(|| <span class="nu">1.0</span> / px)</span></div>
+              <div class="l"><b>6</b><span>}</span></div>
+              <div class="l"><b>7</b><span></span></div>
+              <div class="l add hk b2"><b>8</b><span><span class="kw">pub fn</span> <span class="fn">name</span>(s: &amp;<span class="ty">Star</span>) -&gt; &amp;<span class="ty">str</span> {</span></div>
+              <div class="l add hk b2"><b>9</b><span>    &amp;s.name</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="bc rv">
+        <h3>File explorer</h3>
+        <p>A lazy tree with git status on every row and a highlighted, read-only viewer.</p>
+        <div class="viz" aria-hidden="true">
+          <div class="row"><span><span class="dim">▾</span> src</span><span class="M">•</span></div>
+          <div class="row"><span style="padding-left:14px"><i class="ib" style="color:#dea584">rs</i>lib.rs</span></div>
+          <div class="row"><span style="padding-left:14px"><i class="ib" style="color:#dea584">rs</i><span class="M">orbit.rs</span></span><span class="M">M</span></div>
+          <div class="row"><span style="padding-left:14px"><i class="ib" style="color:#dea584">rs</i><span class="M">star.rs</span></span><span class="M">M</span></div>
+          <div class="row"><span><i class="ib" style="color:#8fa1b3">to</i>Cargo.toml</span></div>
+          <div class="row"><span><i class="ib" style="color:#6ea8ff">md</i><span class="A">README.md</span></span><span class="A">A</span></div>
+        </div>
+      </article>
+
+      <article class="bc rv">
+        <h3>Stage &amp; commit</h3>
+        <p>Stage, unstage and discard — with a confirmation. Merge conflicts get their own section.</p>
+        <div class="viz" id="vzStage" aria-hidden="true">
+          <div class="row dim"><span>CHANGES</span><span><kbd id="spaceKey">space</kbd></span></div>
+          <div class="row sr"><span class="M">src/orbit.rs</span><span class="tag">M</span></div>
+          <div class="row sr"><span class="M">src/star.rs</span><span class="tag">M</span></div>
+          <div class="row sr"><span class="D">legacy/old.rs</span><span class="tag" style="color:var(--del-fg);background:rgba(255,99,99,.1)">D</span></div>
+        </div>
+      </article>
+
+      <article class="bc rv">
+        <h3>History</h3>
+        <p>Every commit, every file it touched, every diff. One keypress away.</p>
+        <div class="viz hist" aria-hidden="true">
+          <div class="row"><span class="g1"><span class="M">a1f3c9e</span> feat: parallax</span><span class="dim">2h</span></div>
+          <div class="row"><span class="g1"><span class="M">7bd20e4</span> fix: epoch</span><span class="dim">1d</span></div>
+          <div class="row"><span class="g1"><span class="M">3c81a5d</span> init: orbit</span><span class="dim">3d</span></div>
+        </div>
+      </article>
+
+      <article class="bc rv">
+        <h3>Live refresh</h3>
+        <p>auri re-reads git every couple of seconds. Edit elsewhere and watch the list update.</p>
+        <div class="viz" id="vzLive" aria-hidden="true" style="min-height:106px"></div>
+      </article>
+
+      <article class="bc w3 rv">
+        <h3>AI commit drafts</h3>
+        <p>Press <kbd>Ctrl-G</kbd> and Codex CLI or opencode drafts a one-line message from your staged diff. It only fills the box — <strong style="color:var(--text);font-weight:500">it never commits for you</strong>. <kbd>Ctrl-T</kbd> swaps the provider.</p>
+        <div class="viz" id="vzAi" aria-hidden="true" style="padding:14px 0">
+          <div class="aibox"><span class="g" id="aiSpin">✦</span><span class="typed" id="aiTyped"></span></div>
+          <div class="row dim" style="margin-top:10px"><span>provider: <span class="g">codex</span> ⇄ opencode</span><span>optional</span></div>
+        </div>
+      </article>
+
+      <article class="bc w3 rv">
+        <h3>Keyboard or mouse</h3>
+        <p>Vim-style keys, or click everything. Drag the dividers — your layout is remembered between sessions.</p>
+        <div class="viz split" id="vzSplit" style="padding:0">
+          <div><span class="dim">EXPLORER</span><br>▾ src<br>&nbsp;&nbsp;lib.rs<br>&nbsp;&nbsp;<span class="M">orbit.rs</span><br>&nbsp;&nbsp;star.rs</div>
+          <div class="grip" id="grip" role="separator" aria-label="Drag to resize"></div>
+          <div><span class="dim">DIFF</span><br><span class="kw">pub fn</span> <span class="fn">distance</span>(px) {<br>&nbsp;&nbsp;<span class="dim">← drag the divider</span><br>}</div>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ USE CASES ═══════════════ -->
+<section class="sec" id="uses">
+  <div class="wrap">
+    <p class="eyebrow rv">Use cases</p>
+    <h2 class="rv">Reach for it when you need to <span class="b">look</span>.</h2>
+    <p class="sub rv">Small enough to leave open in a pane all day.</p>
+    <div class="uses">
+      <div class="use rv"><div class="num">01</div><h3>Before you commit</h3><p>Stage exactly what you mean to. Read your own diff side by side, then commit — with an optional AI draft of the message that you always review.</p></div>
+      <div class="use rv"><div class="num">02</div><h3>While an agent codes</h3><p>Keep auri open in a split next to Codex or opencode (<code>tmux</code>, Zellij, your terminal’s panes). It refreshes on its own, so every change lands in front of you.</p></div>
+      <div class="use rv"><div class="num">03</div><h3>After a pull</h3><p>Browse history, open any commit and see the diff of every file it touched — no <code>git log</code> incantations to remember.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ KEYS ═══════════════ -->
+<section class="sec" id="keys">
+  <div class="wrap">
+    <p class="eyebrow rv">Keys</p>
+    <h2 class="rv">A handful of keys.</h2>
+    <p class="sub rv">Run <kbd>auri --help</kbd> for the essentials. Go on — press some of these keys right now.</p>
+    <div class="kgrid rv">
+      <div class="kg">
+        <h3>Navigate</h3>
+        <div class="kr"><span>Explorer</span><div><i class="cap-k" data-k="e">e</i></div></div>
+        <div class="kr"><span>Source control</span><div><i class="cap-k" data-k="c">c</i></div></div>
+        <div class="kr"><span>Focus panels</span><div><i class="cap-k" data-k="1">1</i><i class="cap-k" data-k="2">2</i><i class="cap-k" data-k="3">3</i></div></div>
+        <div class="kr"><span>Move</span><div><i class="cap-k" data-k="j">j</i><i class="cap-k" data-k="k">k</i></div></div>
+        <div class="kr"><span>Top / bottom</span><div><i class="cap-k" data-k="g">g</i><i class="cap-k" data-k="G">G</i></div></div>
+      </div>
+      <div class="kg">
+        <h3>Act</h3>
+        <div class="kr"><span>Stage / unstage</span><div><i class="cap-k" data-k="space">space</i></div></div>
+        <div class="kr"><span>Stage all</span><div><i class="cap-k" data-k="a">a</i></div></div>
+        <div class="kr"><span>Next / prev change</span><div><i class="cap-k" data-k="n">n</i><i class="cap-k" data-k="N">N</i></div></div>
+        <div class="kr"><span>Draft message with AI</span><div><i class="cap-k" data-k="ctrl+g">Ctrl-G</i></div></div>
+        <div class="kr"><span>Open / commit</span><div><i class="cap-k" data-k="enter">⏎</i></div></div>
+      </div>
+      <div class="kg">
+        <h3>Layout</h3>
+        <div class="kr"><span>Toggle sidebar</span><div><i class="cap-k" data-k="b">b</i></div></div>
+        <div class="kr"><span>Resize sidebar</span><div><i class="cap-k" data-k="[">[</i><i class="cap-k" data-k="]">]</i></div></div>
+        <div class="kr"><span>Refresh</span><div><i class="cap-k" data-k="r">r</i></div></div>
+        <div class="kr"><span>Quit</span><div><i class="cap-k" data-k="q">q</i></div></div>
+        <div class="kr"><span>Resize panes</span><div><i class="cap-k" style="font-size:11px">drag</i></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ INSTALL / CTA ═══════════════ -->
+<section class="cta" id="install">
+  <div class="wrap">
+    <p class="eyebrow rv">Free &amp; open source</p>
+    <h2 class="rv">Take a <span class="g">look</span>.</h2>
+    <p class="sub rv" style="margin:0 auto 34px">Three steps and you’re looking at your diffs.</p>
+    <div class="steps rv">
+      <div class="step"><small>1 · Install</small><code>cargo install auri-tui</code></div>
+      <div class="step"><small>2 · Go to a repo</small><code>cd my-project</code></div>
+      <div class="step"><small>3 · Look</small><code>auri <span class="cur"></span></code></div>
+    </div>
+    <div class="install rv" data-install>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-cmd="curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh">Shell</button>
+        <button role="tab" aria-selected="false" data-cmd="cargo install auri-tui">Cargo</button>
+      </div>
+      <div class="cmd">
+        <code>curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh</code>
+        <button class="copy" type="button">Copy</button>
+      </div>
+    </div>
+    <div class="rv">
+      <a class="btn" href="https://github.com/matheusz-nied/auri-tui/releases">Download a release</a>
+      <a class="btn ghost" href="https://github.com/matheusz-nied/auri-tui">Star on GitHub ★</a>
+    </div>
+    <p class="req rv">Needs <span class="mono">git</span> on your PATH. A true-color terminal gives the best highlighting.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    auri · MIT · <a href="https://github.com/matheusz-nied/auri-tui/releases">Releases</a> · <a href="https://github.com/matheusz-nied/auri-tui/blob/main/CHANGELOG.md">Changelog</a> · <a href="https://github.com/matheusz-nied/auri-tui">GitHub</a>
+  </div>
+</footer>
 
 <script>
-  // Install tabs + copy
-  const cmd = document.getElementById('cmd');
-  const tabs = document.querySelectorAll('.tabs button');
-  tabs.forEach(t => t.addEventListener('click', () => {
-    tabs.forEach(o => o.setAttribute('aria-selected', o === t));
-    cmd.textContent = t.dataset.cmd;
-  }));
-  const copy = document.getElementById('copy');
-  copy.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(cmd.textContent); copy.textContent = 'Copied'; }
-    catch { copy.textContent = 'Select & copy'; }
-    setTimeout(() => copy.textContent = 'Copy', 1600);
+(() => {
+  'use strict';
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const cl = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const seg = (p, a, b) => cl((p - a) / (b - a));
+  const ease = t => t * t * (3 - 2 * t);
+  const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const fine = matchMedia('(pointer: fine)').matches;
+
+  /* ── syntax highlighting (tiny, just for the demos) ───────────── */
+  const LANG = {
+    rs: { re: /(\/\/.*$)|("(?:[^"\\]|\\.)*")|\b(pub|fn|let|mut|use|struct|impl|self|as|crate|true|false)\b|\b(f64|f32|u32|u64|usize|i32|str|bool|char|Self|[A-Z][A-Za-z0-9_]*)\b|\b(\d[\d_.]*)\b|\b([a-z_][a-z0-9_]*)(?=\()|(#\[.*\])/g,
+          cls: ['cm', 'st', 'kw', 'ty', 'nu', 'fn', 'cm'] },
+    md: { re: /^(#+ .*)|(`[^`]*`)|^(- )/g, cls: ['fn', 'st', 'kw'] },
+    toml: { re: /^(\[.*\])|^([a-z_]+)(?= =)|("[^"]*")|\b(\d[\d.]*)\b/g, cls: ['ty', 'fn', 'st', 'nu'] }
+  };
+  const langOf = p => p.endsWith('.rs') ? 'rs' : p.endsWith('.md') ? 'md' : p.endsWith('.toml') ? 'toml' : 'rs';
+  function hl(s, lang = 'rs') {
+    const { re, cls } = LANG[lang]; re.lastIndex = 0;
+    let out = '', i = 0, m;
+    while ((m = re.exec(s))) {
+      if (m[0] === '') { re.lastIndex++; continue; }
+      out += esc(s.slice(i, m.index));
+      const k = m.findIndex((x, j) => j > 0 && x !== undefined) - 1;
+      out += `<span class="${cls[k]}">${esc(m[0])}</span>`;
+      i = m.index + m[0].length;
+    }
+    return out + esc(s.slice(i));
+  }
+
+  /* ── background sky ───────────────────────────────────────────── */
+  (() => {
+    const cv = $('#sky'), cx = cv.getContext('2d');
+    let W, H, stars = [], shoot = null, nextShoot = 5000, mx = .5, my = .5, tmx = .5, tmy = .5;
+    let s = 20260929; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    function size() {
+      const dpr = Math.min(devicePixelRatio || 1, 2);
+      W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr;
+      cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      s = 20260929;
+      stars = Array.from({ length: Math.round(W * H / 8500) }, () => {
+        const c = rnd();
+        return { x: rnd() * W, y: rnd() * H, z: .2 + rnd() * .8, r: .4 + rnd() * 1.2, sp: .4 + rnd() * 1.6, ph: rnd() * 6.28,
+                 col: c > .88 ? '242,184,75' : c > .76 ? '150,190,255' : '255,255,255' };
+      });
+      if (reduce) draw(0);
+    }
+    function draw(t) {
+      cx.clearRect(0, 0, W, H);
+      const sy = scrollY;
+      for (const st of stars) {
+        const y = (((st.y - sy * st.z * .22 + (my - .5) * -14 * st.z) % H) + H) % H;
+        const x = st.x + (mx - .5) * -18 * st.z;
+        const a = reduce ? .5 * st.z : (.35 + .65 * (.5 + .5 * Math.sin(t * .001 * st.sp + st.ph))) * st.z;
+        cx.fillStyle = `rgba(${st.col},${a.toFixed(3)})`;
+        cx.beginPath(); cx.arc(x, y, st.r * st.z + .2, 0, 6.283); cx.fill();
+      }
+      if (shoot) {
+        const k = (t - shoot.t0) / 900;
+        if (k >= 1) shoot = null;
+        else {
+          const x = shoot.x + shoot.dx * k, y = shoot.y + shoot.dy * k;
+          const g = cx.createLinearGradient(x, y, x - shoot.dx * .16, y - shoot.dy * .16);
+          g.addColorStop(0, `rgba(255,244,214,${1 - k})`); g.addColorStop(1, 'rgba(255,244,214,0)');
+          cx.strokeStyle = g; cx.lineWidth = 1.6; cx.beginPath(); cx.moveTo(x, y); cx.lineTo(x - shoot.dx * .16, y - shoot.dy * .16); cx.stroke();
+        }
+      }
+    }
+    function loop(t) {
+      mx += (tmx - mx) * .05; my += (tmy - my) * .05;
+      if (!shoot && t > nextShoot) {
+        shoot = { t0: t, x: rnd() * W * .8, y: rnd() * H * .35, dx: 320 + rnd() * 200, dy: 140 + rnd() * 90 };
+        nextShoot = t + 7000 + rnd() * 9000;
+      }
+      draw(t); requestAnimationFrame(loop);
+    }
+    size(); addEventListener('resize', size);
+    if (reduce) { addEventListener('scroll', () => draw(0), { passive: true }); return; }
+    addEventListener('pointermove', e => { tmx = e.clientX / W; tmy = e.clientY / H; }, { passive: true });
+    requestAnimationFrame(loop);
+  })();
+
+  /* ── nav, progress bar, reveal ────────────────────────────────── */
+  (() => {
+    const nav = $('#nav'), bar = $('#progress');
+    const onScroll = () => {
+      nav.classList.toggle('scrolled', scrollY > 24);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      bar.style.transform = `scaleX(${max > 0 ? cl(scrollY / max) : 0})`;
+    };
+    addEventListener('scroll', onScroll, { passive: true }); onScroll();
+    const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { threshold: .12, rootMargin: '0px 0px -6% 0px' });
+    $$('.rv').forEach((el, i) => { el.style.transitionDelay = (el.closest('.bento, .uses, .kgrid') ? (i % 3) * 90 : 0) + 'ms'; io.observe(el); });
+  })();
+
+  /* ── install boxes ────────────────────────────────────────────── */
+  $$('[data-install]').forEach(box => {
+    const code = $('code', box), btn = $('.copy', box), tabs = $$('.tabs button', box);
+    tabs.forEach(t => t.addEventListener('click', () => { tabs.forEach(o => o.setAttribute('aria-selected', o === t)); code.textContent = t.dataset.cmd; }));
+    btn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(code.textContent); btn.textContent = 'Copied ✓'; }
+      catch { btn.textContent = 'Select & copy'; }
+      setTimeout(() => btn.textContent = 'Copy', 1600);
+    });
   });
 
-  // Sparse starfield
-  const sky = document.getElementById('sky');
-  let seed = 7;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  for (let i = 0; i < 90; i++) {
-    const s = document.createElement('i');
-    s.style.left = rnd() * 100 + '%';
-    s.style.top = rnd() * 100 + '%';
-    s.style.opacity = (0.15 + rnd() * 0.5).toFixed(2);
-    if (rnd() > 0.9) { s.style.width = s.style.height = '3px'; }
-    sky.appendChild(s);
+  /* ── the interactive auri demo ────────────────────────────────── */
+  const term = $('#term'), screen = $('#screen'), side = $('#side'), main = $('#main'), mh = $('#mh'), pane = $('#pane'),
+        sbar = $('#sbar'), echoBox = $('#echo'), capEl = $('#cap');
+
+  const eq = s => ['=', s, s], add = s => ['+', null, s], del = s => ['-', s, null];
+  const ORBIT = [
+    eq('use crate::star::Star;'), eq('use std::f64::consts::PI;'), eq(''),
+    eq('/// Orbital helpers for a binary system.'), eq('pub struct Orbit {'),
+    eq('    pub name: String,'), eq('    pub a: Star,'), eq('    pub b: Star,'),
+    ['~', '    pub period: f64,', '    pub period_days: f64,'],
+    eq('}'), eq(''), eq('impl Orbit {'),
+    ['~', '    /// Distance in parsecs.', '    /// Distance in parsecs, from parallax.'],
+    ['~', '    pub fn distance(p: f64) -> f64 {', '    pub fn distance(px: f64) -> Option<f64> {'],
+    ['~', '        1.0 / p', '        (px > 0.0).then(|| 1.0 / px)'],
+    eq('    }'), eq(''), eq('    /// Semi-major axis in AU.'),
+    eq('    pub fn axis(&self, mass: f64) -> f64 {'),
+    ['~', '        let years = self.period / 365.25;', '        let years = self.period_days / 365.25;'],
+    eq('        (mass * years.powi(2)).cbrt()'), eq('    }'),
+    add(''), add('    /// Angular speed in rad/day.'), add('    pub fn speed(&self) -> f64 {'),
+    add('        2.0 * PI / self.period_days'), add('    }'),
+    eq(''), eq('    pub fn label(&self) -> String {'),
+    ['~', '        self.name.clone()', '        format!("{} (A+B)", self.name)'],
+    eq('    }'), eq('}')
+  ];
+  const STAR = [
+    eq('#[derive(Debug, Clone)]'), eq('pub struct Star {'), eq('    pub name: String,'),
+    ['~', '    pub mag: f64,', '    pub magnitude: f64,'], add('    pub spectral: char,'),
+    eq('}'), eq(''), eq('impl Star {'), eq('    pub fn is_bright(&self) -> bool {'),
+    ['~', '        self.mag < 3.0', '        self.magnitude < 3.0'], eq('    }'), eq('}')
+  ];
+  const OLD = [del('// TODO: remove once orbit.rs lands'), del('pub fn old_distance(p: f64) -> f64 {'), del('    1.0 / p'), del('}')];
+  const README = [add('# orbit'), add(''), add('Orbital math for binary star systems.'), add(''), add('- Albireo: a gold star and a blue star,'), add('  side by side.')];
+  const LIB = ['pub mod orbit;', 'pub mod star;', '', 'pub use orbit::Orbit;', 'pub use star::Star;'];
+  const CARGO = ['[package]', 'name = "orbit"', 'version = "0.3.0"', 'edition = "2021"', '', '[dependencies]'];
+  const right = rows => rows.filter(r => r[2] != null).map(r => r[2]);
+
+  const FS = {
+    'src/lib.rs': LIB, 'src/orbit.rs': right(ORBIT), 'src/star.rs': right(STAR),
+    'Cargo.toml': CARGO, 'README.md': right(README)
+  };
+  const ICON = { rs: ['rs', '#dea584'], md: ['md', '#6ea8ff'], toml: ['to', '#8fa1b3'] };
+  const AI_MSG = [
+    [/orbit\.rs/, 'feat(orbit): distance() returns Option'],
+    [/star\.rs/, 'refactor(star): rename mag to magnitude'],
+    [/README/, 'docs: add README'],
+    [/old\.rs/, 'chore: drop legacy distance helper']
+  ];
+
+  const seed = () => ({
+    files: [
+      { path: 'README.md', name: 'README.md', dir: '', st: 'A', staged: true, rows: README },
+      { path: 'src/orbit.rs', name: 'orbit.rs', dir: 'src', st: 'M', staged: false, rows: ORBIT },
+      { path: 'src/star.rs', name: 'star.rs', dir: 'src', st: 'M', staged: false, rows: STAR },
+      { path: 'legacy/old.rs', name: 'old.rs', dir: 'legacy', st: 'D', staged: false, rows: OLD }
+    ],
+    history: [
+      { hash: 'a1f3c9e', msg: 'feat: parallax offsets', when: '2h', files: [{ path: 'src/orbit.rs', rows: [eq('pub struct Orbit {'), eq('    pub name: String,'), add('    pub a: Star,'), add('    pub b: Star,'), eq('}')] }] },
+      { hash: '7bd20e4', msg: 'fix: epoch rollover', when: '1d', files: [{ path: 'src/star.rs', rows: [eq('impl Star {'), ['~', '    pub fn epoch() -> f64 { 2000.0 }', '    pub fn epoch() -> f64 { 2000.5 }'], eq('}')] }] },
+      { hash: '3c81a5d', msg: 'init: orbit crate', when: '3d', files: [{ path: 'Cargo.toml', rows: CARGO.map(add) }] }
+    ]
+  });
+
+  let S = {}, aiTok = 0, runTok = 0, msgT, auto = false, inView = true;
+
+  function reset() {
+    aiTok++;
+    S = Object.assign(seed(), {
+      view: 'git', focus: 'list', side: true, input: '', ai: null, msg: null, hunk: -1,
+      expanded: { src: true }, sel: { git: 'f:src/orbit.rs', exp: 'x:src/lib.rs' }, diff: null, file: null, reset: true
+    });
+    S.view = 'git'; showSel();
+    S.view = 'exp'; showSel();
+    S.view = 'git'; showSel();
+    screen.classList.remove('nosb');
+    paint(true);
   }
+
+  /* — derived data — */
+  const staged = () => S.files.filter(f => f.staged);
+  const fileSt = p => (S.files.find(f => f.path === p) || {}).st;
+  function gitItems() {
+    const it = [];
+    S.files.filter(f => f.staged).forEach(f => it.push({ key: 'f:' + f.path, f, sec: 'staged' }));
+    S.files.filter(f => !f.staged).forEach(f => it.push({ key: 'f:' + f.path, f, sec: 'changes' }));
+    S.history.forEach(c => it.push({ key: 'h:' + c.hash, c, sec: 'history' }));
+    return it;
+  }
+  function expItems() {
+    const out = [{ key: 'd:src', dir: 'src', depth: 0 }];
+    if (S.expanded.src) ['src/lib.rs', 'src/orbit.rs', 'src/star.rs'].forEach(p => out.push({ key: 'x:' + p, path: p, depth: 1 }));
+    ['Cargo.toml', 'README.md'].forEach(p => out.push({ key: 'x:' + p, path: p, depth: 0 }));
+    return out;
+  }
+  const items = () => S.view === 'git' ? gitItems() : expItems();
+
+  function showSel() {
+    const k = S.sel[S.view] || '', i = k.indexOf(':'), t = k.slice(0, i), v = k.slice(i + 1);
+    if (S.view === 'git') {
+      if (t === 'f') S.diff = { kind: 'work', path: v };
+      else if (t === 'h') { const c = S.history.find(c => c.hash === v); if (c) S.diff = { kind: 'commit', hash: v, path: c.files[0].path }; }
+      S.hunk = -1;
+    } else if (t === 'x') S.file = { path: v };
+    S.reset = true;
+  }
+  function curDiff() {
+    const d = S.diff; if (!d) return null;
+    if (d.kind === 'work') { const f = S.files.find(f => f.path === d.path); return f && { rows: f.rows, lang: langOf(f.path), f, title: d.path }; }
+    const c = S.history.find(c => c.hash === d.hash), f = c && c.files.find(f => f.path === d.path);
+    return f && { rows: f.rows, lang: langOf(f.path), c, title: d.path };
+  }
+  const hunksOf = rows => { const hs = []; rows.forEach((r, i) => { if (r[0] !== '=' && (i === 0 || rows[i - 1][0] === '=')) hs.push(i); }); return hs; };
+
+  /* — rendering — */
+  const logoSvg = '<svg viewBox="0 0 32 32"><circle cx="12" cy="16" r="7" fill="#f2b84b"/><circle cx="23.5" cy="16" r="4" fill="#6ea8ff"/></svg>';
+  const MAXC = 24;
+  function renderSide() {
+    const sel = S.sel[S.view];
+    let h = `<div class="vtabs"><button data-act="tab" data-v="exp" class="${S.view === 'exp' ? 'on' : ''}">Explorer</button><button data-act="tab" data-v="git" class="${S.view === 'git' ? 'on' : ''}">Source Control</button></div>`;
+    if (S.view === 'git') {
+      const st = staged().length, can = st > 0 && S.input.trim();
+      let inner;
+      if (S.ai === 'run') inner = '<span class="run"><span class="spin">✦</span> drafting from staged diff…</span>';
+      else if (S.input) { const t = S.input.length > MAXC ? '…' + S.input.slice(-(MAXC - 1)) : S.input; inner = esc(t) + (S.focus === 'input' ? '<span class="caret"></span>' : ''); }
+      else inner = S.focus === 'input' ? '<span class="caret"></span>' : '<span class="ph">Message (⏎ to commit)</span>';
+      h += `<div class="cbox ${S.focus === 'input' ? 'focus' : ''}" data-act="input"><span class="txt">${inner}</span><button class="cbtn" data-act="ai" title="Draft with AI (Ctrl-G)">✦</button><button class="cbtn ${can ? 'ok' : 'dis'}" data-act="commit" title="Commit">✓</button></div>`;
+      const sec = (label, arr) => arr.length ? `<div class="sh"><span>${label}</span><span>${arr.length}</span></div>` + arr.map(x => `<div class="it ${x.key === sel ? 'sel' : ''}" data-act="sel" data-key="${x.key}"><span class="nm ${x.f.st}">${esc(x.f.name)}<em>${esc(x.f.dir)}</em></span><span class="${x.f.st}">${x.f.st}</span></div>`).join('') : '';
+      const all = gitItems();
+      h += sec('STAGED CHANGES', all.filter(x => x.sec === 'staged')) + sec('CHANGES', all.filter(x => x.sec === 'changes'));
+      if (!all.some(x => x.sec !== 'history')) h += '<div class="none">✓ Working tree clean.<br>Press ↻ reset to replay.</div>';
+      h += `<div class="sh"><span>HISTORY</span></div>` + S.history.map(c => `<div class="it ${'h:' + c.hash === sel ? 'sel' : ''}" data-act="sel" data-key="h:${c.hash}"><span class="nm"><span class="M">${c.hash}</span> ${esc(c.msg)}</span><span class="dim">${c.when}</span></div>`).join('');
+    } else {
+      h += expItems().map(x => {
+        const pad = 12 + x.depth * 14;
+        if (x.dir) {
+          const dirty = S.files.some(f => f.path.startsWith(x.dir + '/'));
+          return `<div class="it ${x.key === sel ? 'sel' : ''}" data-act="sel" data-key="${x.key}" style="padding-left:${pad}px"><span class="nm"><span class="dim">${S.expanded[x.dir] ? '▾' : '▸'}</span> ${x.dir}</span>${dirty ? '<span class="M">•</span>' : ''}</div>`;
+        }
+        const name = x.path.split('/').pop(), st = fileSt(x.path), [ib, col] = ICON[langOf(x.path)];
+        return `<div class="it ${x.key === sel ? 'sel' : ''}" data-act="sel" data-key="${x.key}" style="padding-left:${pad}px"><span class="nm ${st || ''}"><i class="ib" style="color:${col}">${ib}</i>${name}</span>${st ? `<span class="${st}">${st}</span>` : ''}</div>`;
+      }).join('');
+    }
+    side.innerHTML = h;
+    const cur = $('.it.sel', side);
+    if (cur) { const t = cur.offsetTop, b = t + cur.offsetHeight; if (t < side.scrollTop + 60) side.scrollTop = Math.max(0, t - 60); else if (b > side.scrollTop + side.clientHeight - 4) side.scrollTop = b - side.clientHeight + 4; }
+  }
+
+  function renderMainHead() {
+    let l = '<span>Nothing open</span>', r = '';
+    if (S.view === 'git') {
+      const d = curDiff();
+      if (d) {
+        const hs = hunksOf(d.rows);
+        if (d.f) { l = `<span><b>${d.title}</b> <span class="${d.f.st}">${d.f.st}</span></span>`; r = (S.hunk >= 0 ? `change ${S.hunk + 1}/${hs.length}` : `${hs.length} change${hs.length === 1 ? '' : 's'}`) + (d.f.staged ? ' · <span class="A">staged</span>' : ''); }
+        else { l = `<span><b>${d.title}</b> · <span class="M">${S.diff.hash}</span> ${esc(d.c.msg)}</span>`; r = S.hunk >= 0 ? `change ${S.hunk + 1}/${hs.length}` : `${hs.length} change${hs.length === 1 ? '' : 's'}`; }
+      }
+    } else if (S.file) {
+      const st = fileSt(S.file.path);
+      l = `<span><b>${S.file.path}</b> ${st ? `<span class="${st}">${st}</span>` : ''}</span>`; r = FS[S.file.path].length + ' lines';
+    }
+    mh.innerHTML = l + `<span class="r">${r}</span>`;
+  }
+
+  function renderMain() {
+    renderMainHead();
+    const keep = S.reset ? 0 : pane.scrollTop; S.reset = false;
+    let h = '';
+    if (S.view === 'git') {
+      const d = curDiff();
+      if (d) {
+        let a = 0, b = 0;
+        h = '<div class="rows">' + d.rows.map(([t, x, y]) => {
+          const L = x != null ? `<div class="dc ${t === '=' ? '' : 'del'}"><b class="n">${++a}</b><span>${hl(x, d.lang)}</span></div>` : '<div class="dc ghost"><b class="n"></b></div>';
+          const R = y != null ? `<div class="dc ${t === '=' ? '' : 'add'}"><b class="n">${++b}</b><span>${hl(y, d.lang)}</span></div>` : '<div class="dc ghost"><b class="n"></b></div>';
+          return `<div class="dr">${L}${R}</div>`;
+        }).join('') + '</div>';
+      } else h = `<div class="empty"><div>${logoSvg}<br>Select a file to see its diff</div></div>`;
+    } else if (S.file) {
+      const lang = langOf(S.file.path);
+      h = '<div class="rows">' + FS[S.file.path].map((t, i) => `<div class="fr"><b class="n">${i + 1}</b><span>${hl(t, lang)}</span></div>`).join('') + '</div>';
+    } else h = `<div class="empty"><div>${logoSvg}<br>Open a file from the tree</div></div>`;
+    pane.innerHTML = h; pane.scrollTop = keep;
+    const d = S.view === 'git' && curDiff(); if (d) markHunk(d.rows, hunksOf(d.rows));
+  }
+  function markHunk(rows, hs) {
+    const box = $('.rows', pane); if (!box) return;
+    [...box.children].forEach(c => c.classList.remove('cur'));
+    if (S.hunk < 0 || hs[S.hunk] == null) return;
+    for (let j = hs[S.hunk]; j < rows.length && rows[j][0] !== '='; j++) box.children[j].classList.add('cur');
+  }
+
+  const HINT = {
+    input: [['⏎', 'commit', 'Enter'], ['^G', '✦ draft', 'ctrl+g'], ['esc', 'back', 'Escape']],
+    main_git: [['j k', 'scroll', 'j'], ['n N', 'next change', 'n'], ['1', 'list', '1'], ['e', 'explorer', 'e']],
+    main_exp: [['j k', 'scroll', 'j'], ['1', 'tree', '1'], ['c', 'commit', 'c']],
+    list_git: [['j k', 'move', 'j'], ['space', 'stage', ' '], ['n', 'next change', 'n'], ['c', 'commit', 'c'], ['^G', '✦', 'ctrl+g']],
+    list_exp: [['j k', 'move', 'j'], ['l h', 'expand', 'l'], ['⏎', 'open', 'Enter'], ['c', 'git', 'c']]
+  };
+  function renderStatus() {
+    const hs = S.focus === 'input' ? HINT.input : HINT[S.focus + '_' + S.view];
+    sbar.innerHTML = `<span class="br">⎇ main</span><span class="hints">${hs.map(([k, d, send]) => `<span class="hint" data-act="key" data-k="${send}"><kbd>${k}</kbd> ${d}</span>`).join('')}</span>${S.msg ? `<span class="msg ${S.msg.type}">${esc(S.msg.t)}</span>` : ''}`;
+  }
+  function renderFocus() {
+    side.classList.toggle('focus', S.focus === 'list');
+    main.classList.toggle('focus', S.focus === 'main');
+  }
+  function paint(mainToo) {
+    renderSide(); renderStatus(); renderFocus();
+    if (mainToo) renderMain(); else renderMainHead();
+  }
+  function notify(t, type = 'info') {
+    S.msg = { t, type }; clearTimeout(msgT);
+    msgT = setTimeout(() => { S.msg = null; renderStatus(); }, type === 'err' ? 5000 : 3200);
+  }
+
+  /* — actions — */
+  function move(d, abs) {
+    const it = items(); if (!it.length) return;
+    let i = it.findIndex(x => x.key === S.sel[S.view]);
+    i = abs === 'top' ? 0 : abs === 'end' ? it.length - 1 : cl(i + d, 0, it.length - 1);
+    S.sel[S.view] = it[i].key; showSel(); paint(true);
+  }
+  function fixSel() { const it = items(); if (!it.some(x => x.key === S.sel[S.view])) S.sel[S.view] = it[0] && it[0].key; }
+  function toggleStage() {
+    if (S.view !== 'git') return;
+    const it = gitItems().find(x => x.key === S.sel.git);
+    if (!it || !it.f) return;
+    it.f.staged = !it.f.staged; notify((it.f.staged ? 'Staged ' : 'Unstaged ') + it.f.name); paint(true);
+  }
+  function stageAll() {
+    if (S.view !== 'git') return;
+    S.files.forEach(f => f.staged = true); notify('Staged all changes'); paint(true);
+  }
+  function jumpHunk(dir) {
+    if (S.view !== 'git') return;
+    const d = curDiff(); if (!d) return;
+    const hs = hunksOf(d.rows); if (!hs.length) return;
+    let i = S.hunk + dir;
+    if (S.hunk < 0 && dir < 0) i = hs.length - 1;
+    if (i >= hs.length) { i = 0; notify('Back to the first change'); }
+    if (i < 0) i = hs.length - 1;
+    S.hunk = i; markHunk(d.rows, hs); renderMainHead();
+    const row = $('.rows', pane).children[hs[i]];
+    pane.scrollTo({ top: Math.max(0, row.offsetTop - 40), behavior: reduce ? 'auto' : 'smooth' });
+  }
+  function setView(v) {
+    S.view = v; if (v !== 'git' && S.focus === 'input') S.focus = 'list';
+    S.reset = true; fixSel(); paint(true);
+  }
+  function setFocus(f) { S.focus = f; paint(); }
+  function aiMessage() { const names = staged().map(f => f.path).join(' '); return (AI_MSG.find(([re]) => re.test(names)) || [0, 'chore: update files'])[1]; }
+  async function generate() {
+    if (!staged().length) { notify('Nothing staged — stage a file first (space)', 'err'); paint(); return; }
+    if (S.ai) return;
+    const tok = ++aiTok; S.ai = 'run'; S.input = ''; S.focus = 'input'; paint();
+    await sleep(1300); if (tok !== aiTok) return;
+    S.ai = null; const msg = aiMessage();
+    for (const ch of msg) { S.input += ch; renderSide(); await sleep(24); if (tok !== aiTok) return; }
+    notify('✦ Draft ready — review it, then ⏎ to commit', 'ok'); paint();
+  }
+  function commit() {
+    const st = staged();
+    if (!st.length) { notify('Nothing staged', 'err'); paint(); return; }
+    if (!S.input.trim()) { notify('Write a message first — or press ^G for a draft', 'err'); paint(); return; }
+    const hash = Array.from({ length: 7 }, () => '0123456789abcdef'[Math.random() * 16 | 0]).join('');
+    S.history.unshift({ hash, msg: S.input.trim(), when: 'now', files: st.map(f => ({ path: f.path, rows: f.rows })) });
+    S.files = S.files.filter(f => !f.staged);
+    S.input = ''; S.focus = 'list'; S.sel.git = 'h:' + hash; showSel(); notify('✓ Committed ' + hash, 'ok'); paint(true);
+  }
+
+  const ECHO = { ' ': 'space', Enter: '⏎', Escape: 'esc', ArrowDown: '↓', ArrowUp: '↑', ArrowLeft: '←', ArrowRight: '→', Backspace: '⌫', 'ctrl+g': '^G', PageDown: 'PgDn', PageUp: 'PgUp' };
+  function echo(k) {
+    if (S.focus === 'input' && k.length === 1) return;
+    const el = document.createElement('kbd'); el.textContent = ECHO[k] || k; echoBox.appendChild(el);
+    setTimeout(() => el.remove(), 1500); while (echoBox.children.length > 3) echoBox.firstChild.remove();
+  }
+
+  function press(k) {
+    echo(k); clearTimeout(msgT); S.msg = null;
+    if (k === 'ctrl+g') { generate(); return true; }
+    if (S.focus === 'input') {
+      if (S.ai === 'run') { if (k === 'Escape') { aiTok++; S.ai = null; notify('Cancelled'); paint(); } return true; }
+      if (k === 'Escape') { setFocus('list'); return true; }
+      if (k === 'Enter') { commit(); return true; }
+      if (k === 'Backspace') { S.input = S.input.slice(0, -1); paint(); return true; }
+      if (k.length === 1 && S.input.length < 120) { S.input += k; paint(); return true; }
+      return false;
+    }
+    switch (k) {
+      case 'e': setView('exp'); return true;
+      case 'c': S.view = 'git'; S.focus = 'input'; S.reset = true; fixSel(); paint(true); return true;
+      case '1': S.focus = 'list'; paint(); return true;
+      case '2': S.focus = 'main'; paint(); return true;
+      case '3': S.view = 'git'; if (S.history[0]) S.sel.git = 'h:' + S.history[0].hash; showSel(); S.focus = 'list'; paint(true); return true;
+      case 'b': S.side = !S.side; screen.classList.toggle('nosb', !S.side); if (!S.side) S.focus = 'main'; paint(); return true;
+      case 'q': notify('q quits auri — this demo keeps going ✦'); paint(); return true;
+      case 'r': notify('Refreshed'); paint(); return true;
+      case 'n': jumpHunk(1); return true;
+      case 'N': jumpHunk(-1); return true;
+    }
+    if (S.focus === 'main') {
+      switch (k) {
+        case 'j': case 'ArrowDown': pane.scrollBy(0, 20); return true;
+        case 'k': case 'ArrowUp': pane.scrollBy(0, -20); return true;
+        case 'PageDown': pane.scrollBy(0, 180); return true;
+        case 'PageUp': pane.scrollBy(0, -180); return true;
+        case 'g': pane.scrollTo(0, 0); return true;
+        case 'G': pane.scrollTo(0, 1e5); return true;
+        case 'Escape': setFocus('list'); return true;
+      }
+      return false;
+    }
+    const it = items().find(x => x.key === S.sel[S.view]);
+    switch (k) {
+      case 'j': case 'ArrowDown': move(1); return true;
+      case 'k': case 'ArrowUp': move(-1); return true;
+      case 'g': move(0, 'top'); return true;
+      case 'G': move(0, 'end'); return true;
+      case ' ': case 's': toggleStage(); return true;
+      case 'a': stageAll(); return true;
+      case 'Enter': case 'l': case 'ArrowRight':
+        if (it && it.dir) { S.expanded[it.dir] = k === 'Enter' ? !S.expanded[it.dir] : true; paint(); }
+        else S.focus = 'main', paint();
+        return true;
+      case 'h': case 'ArrowLeft':
+        if (S.view === 'exp' && it) {
+          if (it.dir) S.expanded[it.dir] = false;
+          else if (it.depth === 1) S.sel.exp = 'd:src';
+          paint();
+        }
+        return true;
+    }
+    return false;
+  }
+
+  /* — input wiring — */
+  function stopAuto() { if (!auto) return; auto = false; runTok++; term.classList.add('active'); setCap(); }
+  const KEYS_OK = ['Enter', 'Escape', 'Backspace', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'PageDown', 'PageUp'];
+  term.addEventListener('keydown', e => {
+    if (e.metaKey || e.altKey) return;
+    let k = e.key;
+    if (e.ctrlKey) { if (k.toLowerCase() === 'g') k = 'ctrl+g'; else return; }
+    else if (k.length > 1 && !KEYS_OK.includes(k)) return;
+    stopAuto();
+    if (press(k)) e.preventDefault();
+  });
+  term.addEventListener('pointerdown', e => { stopAuto(); if (!e.target.closest('button')) term.focus({ preventScroll: true }); });
+  term.addEventListener('focus', () => term.classList.add('active'));
+  term.addEventListener('blur', () => { if (!auto) term.classList.remove('active'); });
+  term.addEventListener('click', e => {
+    const t = e.target.closest('[data-act]');
+    if (!t) { const p = e.target.closest('.side, .main'); if (p) setFocus(p === main ? 'main' : 'list'); return; }
+    const a = t.dataset.act;
+    if (a === 'tab') { S.focus = S.focus === 'input' ? 'list' : S.focus; setView(t.dataset.v); }
+    else if (a === 'sel') { S.sel[S.view] = t.dataset.key; showSel(); const it = items().find(x => x.key === t.dataset.key); if (it && it.dir) S.expanded[it.dir] = !S.expanded[it.dir]; S.focus = 'list'; paint(true); }
+    else if (a === 'key') press(t.dataset.k);
+    else if (a === 'ai') generate();
+    else if (a === 'commit') commit();
+    else if (a === 'input') setFocus('input');
+    else if (a === 'reset') { stopAuto(); reset(); }
+    else if (a === 'demo') { play(); }
+  });
+
+  function setCap() {
+    capEl.innerHTML = auto
+      ? '<span class="live"></span>Live demo — click the terminal to take over'
+      : reduce && !S.touched ? 'Click the terminal, then press <kbd>j</kbd><kbd>k</kbd> to move, <kbd>space</kbd> to stage, <kbd>n</kbd> for the next change, <kbd>c</kbd> to commit'
+      : 'Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ draft';
+  }
+
+  /* — autoplay: the same key handler a visitor would use — */
+  const SCRIPT = [
+    [1600, '2'], [900, 'n'], [1200, 'n'], [1200, 'n'], [1200, '1'], [800, ' '],
+    [1000, 'c'], [600, 'ctrl+g'], [3300, 'Enter'],
+    [2800, 'e'], [1000, 'j'], [800, '2'], [700, 'PageDown'], [900, 'PageDown'], [1100, '1'], [800, 'j'], [3000, null]
+  ];
+  async function play() {
+    const tok = ++runTok; auto = true; term.classList.add('active'); reset(); setCap();
+    const wait = async ms => {
+      for (let t = 0; t < ms; t += 100) {
+        await sleep(100); if (tok !== runTok) throw 0;
+        while (!inView || document.hidden) { await sleep(300); if (tok !== runTok) throw 0; }
+      }
+    };
+    try {
+      for (;;) {
+        for (const [ms, k] of SCRIPT) { await wait(ms); if (k) press(k); }
+        reset();
+      }
+    } catch (_) { /* cancelled */ }
+  }
+
+  new IntersectionObserver(es => { inView = es[0].isIntersecting; }, { threshold: .25 }).observe(term);
+
+  // subtle 3D tilt following the pointer
+  if (fine && !reduce) {
+    const wrap = $('#termWrap');
+    wrap.addEventListener('pointermove', e => {
+      const r = wrap.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+      term.style.transform = `perspective(1600px) rotateX(${(-y * 2.2).toFixed(2)}deg) rotateY(${(x * 3).toFixed(2)}deg)`;
+    });
+    wrap.addEventListener('pointerleave', () => term.style.transform = '');
+  }
+
+  reset();
+  if (reduce) setCap(); else play();
+
+  /* ── scroll story ─────────────────────────────────────────────── */
+  (() => {
+    const story = $('#story'), stage = $('#stage'), cons = $('#const'), lbl = $('#lbl'), oG = $('#orbG'), oB = $('#orbB'),
+          pO = $('#pnOld'), pN = $('#pnNew'), caps = $$('.capn'), dots = $$('#dots i');
+    const OLDL = [['', '/// Distance in parsecs.'], ['del', 'pub fn distance(p: f64) -> f64 {'], ['del', '    1.0 / p'], ['', '}']];
+    const NEWL = [['', '/// Distance in parsecs.'], ['add', 'pub fn distance(px: f64) -> Option<f64> {'], ['add', '    (px > 0.0).then(|| 1.0 / px)'], ['', '}']];
+    const pane = (L, tag, sub) => `<div class="pn-h"><span>${tag}</span><span>${sub}</span></div><div style="padding:6px 0">` + L.map(([c, t], i) => `<div class="pl ${c}"><b class="n" style="width:30px">${i + 3}</b><span>${hl(t)}</span></div>`).join('') + '</div>';
+    pO.innerHTML = pane(OLDL, 'HEAD', 'before'); pN.innerHTML = pane(NEWL, 'WORKING TREE', 'after');
+    let ticking = false, last = -1;
+    function update() {
+      ticking = false;
+      const r = story.getBoundingClientRect(), total = story.offsetHeight - innerHeight;
+      const p = cl(-r.top / total);
+      const sw = stage.clientWidth, pw = Math.min(sw * .47, 390), S = pw / 2 + 8;
+      const zoom = ease(seg(p, 0, .26)), sep = ease(seg(p, .24, .55)), up = ease(seg(p, .55, .86));
+      const size = 16 + zoom * 62 + sep * 10 - up * 34;
+      const y = -up * Math.min(stage.clientHeight * .3, 150), x = sep * S;
+      const op = seg(p, .03, .17);
+      oG.style.cssText = `width:${size}px;height:${size}px;opacity:${op};transform:translate(-50%,-50%) translate(${-x}px,${y}px)`;
+      oB.style.cssText = `width:${size}px;height:${size}px;opacity:${op};transform:translate(-50%,-50%) translate(${x}px,${y}px)`;
+      cons.style.transform = `scale(${1 + zoom * 9})`;
+      cons.style.opacity = 1 - seg(p, .1, .25);
+      lbl.style.opacity = 1 - seg(p, .02, .09);
+      const pa = ease(seg(p, .6, .86)), py = 46 + (1 - pa) * 34;
+      for (const [el, dir] of [[pO, -1], [pN, 1]]) {
+        el.style.width = pw + 'px'; el.style.opacity = pa;
+        el.style.transform = `translate(-50%,-50%) translate(${dir * S}px,${py}px) scale(${.94 + pa * .06})`;
+      }
+      const idx = p < .2 ? 0 : p < .5 ? 1 : p < .82 ? 2 : 3;
+      if (idx !== last) { last = idx; caps.forEach((c, i) => c.classList.toggle('on', i === idx)); dots.forEach((d, i) => d.classList.toggle('on', i === idx)); }
+    }
+    const req = () => { if (!ticking) { ticking = true; requestAnimationFrame(update); } };
+    addEventListener('scroll', req, { passive: true }); addEventListener('resize', req); update();
+  })();
+
+  /* ── feature micro-demos ──────────────────────────────────────── */
+  const seen = new Map();
+  const io2 = new IntersectionObserver(es => es.forEach(e => seen.set(e.target, e.isIntersecting)), { threshold: .2 });
+  const track = el => { seen.set(el, false); io2.observe(el); return el; };
+  const whenSeen = async el => { while (!seen.get(el) || document.hidden) await sleep(300); };
+
+  $$('.bc').forEach(c => c.addEventListener('pointermove', e => {
+    const r = c.getBoundingClientRect(); c.style.setProperty('--mx', e.clientX - r.left + 'px'); c.style.setProperty('--my', e.clientY - r.top + 'px');
+  }));
+
+  // stage / unstage
+  (async () => {
+    const box = track($('#vzStage')), rows = $$('.sr', box), key = $('#spaceKey'); let i = 0;
+    if (reduce) { rows[0].classList.add('staged'); $('.tag', rows[0]).textContent = 'staged'; return; }
+    for (;;) {
+      await whenSeen(box); await sleep(1300);
+      const r = rows[i++ % rows.length], on = !r.classList.contains('staged');
+      key.style.cssText = 'background:var(--gold);color:#1a1406;border-color:var(--gold)'; setTimeout(() => key.style.cssText = '', 180);
+      r.classList.toggle('staged', on); $('.tag', r).textContent = on ? 'staged ✓' : (r.textContent.includes('old.rs') ? 'D' : 'M');
+    }
+  })();
+
+  // live refresh
+  (async () => {
+    const box = track($('#vzLive'));
+    const EV = [['M', 'src/orbit.rs', 'M'], ['A', 'tests/parallax.rs', 'A'], ['M', 'src/star.rs', 'M'], ['D', 'legacy/old.rs', 'D'], ['M', 'Cargo.toml', 'M']];
+    const line = ([c, f, k]) => `<div class="row ev"><span class="${c}">${f}</span><span class="${k}">${k}</span></div>`;
+    box.innerHTML = '<div class="row dim"><span>● watching…</span><span>↻ 2s</span></div>' + line(EV[0]) + line(EV[1]);
+    if (reduce) return;
+    let i = 2;
+    for (;;) {
+      await whenSeen(box); await sleep(1900);
+      const hd = box.firstElementChild; hd.insertAdjacentHTML('afterend', line(EV[i++ % EV.length]));
+      while (box.children.length > 5) box.lastElementChild.remove();
+    }
+  })();
+
+  // AI typing
+  (async () => {
+    const box = track($('#vzAi')), typed = $('#aiTyped'), spin = $('#aiSpin');
+    const M = ['feat(orbit): distance() returns Option', 'fix(star): guard against zero parallax', 'refactor: rename mag to magnitude'];
+    if (reduce) { typed.textContent = M[0]; return; }
+    for (let i = 0; ; i++) {
+      await whenSeen(box); typed.textContent = ''; typed.style.color = 'var(--gold)'; typed.textContent = 'drafting from staged diff…'; spin.classList.add('spin'); spin.style.display = 'inline-block';
+      await sleep(1300); spin.classList.remove('spin'); typed.style.color = ''; typed.textContent = '';
+      for (const ch of M[i % M.length]) { typed.textContent += ch; await sleep(30); }
+      await sleep(2800);
+    }
+  })();
+
+  // draggable divider
+  (() => {
+    const sp = $('#vzSplit'), g = $('#grip'); let drag = false;
+    g.addEventListener('pointerdown', e => { drag = true; g.classList.add('drag'); g.setPointerCapture(e.pointerId); });
+    g.addEventListener('pointermove', e => { if (!drag) return; const r = sp.getBoundingClientRect(); sp.style.setProperty('--w', cl((e.clientX - r.left) / r.width, .18, .8) * 100 + '%'); });
+    const end = () => { drag = false; g.classList.remove('drag'); };
+    g.addEventListener('pointerup', end); g.addEventListener('pointercancel', end);
+  })();
+
+  /* ── keycaps light up on the real keyboard ────────────────────── */
+  addEventListener('keydown', e => {
+    if (e.metaKey || e.altKey) return;
+    let k = e.key === ' ' ? 'space' : e.key;
+    if (e.ctrlKey) k = 'ctrl+' + k.toLowerCase();
+    else if (k === 'Enter') k = 'enter';
+    if (k.length > 12) return;
+    $$('.cap-k').filter(c => c.dataset.k === k).forEach(c => { c.classList.add('pressed'); setTimeout(() => c.classList.remove('pressed'), 160); });
+  });
+})();
 </script>
 </body>
 </html>
