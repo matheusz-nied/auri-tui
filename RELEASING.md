@@ -7,14 +7,8 @@ version for fixes.
 ## One-time setup
 
 1. Create the GitHub repo `matheusz-nied/auri-tui` and push `main`.
-2. Create an empty public repo `matheusz-nied/homebrew-tap` (the formula
-   is pushed there as `Formula/auri.rb`, giving
-   `brew install matheusz-nied/tap/auri`).
-3. Create a fine-grained token with *Contents: read & write* on
-   `homebrew-tap` and add it to `auri-tui` as the secret
-   `HOMEBREW_TAP_TOKEN`.
-4. Settings → Pages → Source: **GitHub Actions** (deploys `site/`).
-5. `cargo login` with a crates.io token (for `cargo publish`).
+2. Settings → Pages → Source: **GitHub Actions** (deploys `site/`).
+3. `cargo login` with a crates.io token (for `cargo publish`).
 
 ## Every release
 
@@ -30,10 +24,14 @@ version for fixes.
    ```sh
    git tag vX.Y.Z && git push && git push --tags
    ```
-   The `Release` workflow builds macOS/Linux binaries, creates the GitHub
-   release with the shell installer and pushes the Homebrew formula.
+   The `Release` workflow builds macOS/Linux binaries and creates the
+   GitHub release with the shell installer.
 6. `cargo publish` once the release is out.
-7. Smoke test: `brew install matheusz-nied/tap/auri && auri --version`.
+7. Smoke test:
+   ```sh
+   curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh
+   auri --version
+   ```
 
 ## Demo GIF
 

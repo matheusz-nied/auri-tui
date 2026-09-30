@@ -20,9 +20,6 @@ with side-by-side diffs. Mouse and keyboard both work.
 ## Install
 
 ```sh
-# Homebrew (macOS / Linux)
-brew install matheusz-nied/tap/auri
-
 # Shell installer (macOS / Linux)
 curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh
 
