@@ -18,12 +18,13 @@ concluir. O passo a passo de cada release está em [RELEASING.md](RELEASING.md).
 
 ## Bloqueia o lançamento
 
-- [ ] **Gerar o GIF de demo (ou tirar a imagem do README).** O README
-  referencia `demo/demo.gif`, que não existe: imagem quebrada no GitHub e no
-  crates.io.
+- [x] **Gerar o GIF de demo.** `demo/demo.gif` mostra explorer, diffs,
+  stage/unstage, commit multilinha e histórico com uma sidebar compacta.
+  O roteiro prepara um repositório temporário e preferências próprias;
+  não depende de mudanças locais no projeto.
   ```sh
   brew install vhs
-  vhs demo/demo.tape   # rodar num repo com algumas mudanças não commitadas
+  vhs demo/demo.tape   # rodar na raiz do projeto
   ```
 - [ ] **Datar a versão no `CHANGELOG.md`.** Trocar
   `## [0.1.0] - Unreleased` pela data do lançamento (ex.:

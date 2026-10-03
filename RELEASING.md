@@ -35,5 +35,11 @@ version for fixes.
 
 ## Demo GIF
 
-`vhs demo/demo.tape` (needs [VHS](https://github.com/charmbracelet/vhs))
-regenerates `demo/demo.gif`, used by the README and the landing page.
+Run `vhs demo/demo.tape` from the project root (needs
+[VHS](https://github.com/charmbracelet/vhs), Rust, git and Python 3).
+It builds auri and regenerates `demo/demo.gif` for the README. The tape
+sources `demo/setup.sh` to create a temporary repository with prepared
+diffs and separate preferences (34-column sidebar). Staging and committing
+in the recording affect only that temporary repository, which is removed
+when the recording shell exits. Your working tree and preferences are not
+used for the demo.
