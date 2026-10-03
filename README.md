@@ -1,7 +1,7 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img alt="auri" src="assets/logo-light.svg" height="80">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark-dark.svg">
+    <img alt="auri" src="assets/wordmark-light.svg" height="80">
   </picture>
 </h1>
 
