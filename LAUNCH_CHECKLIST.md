@@ -49,15 +49,15 @@ concluir. O passo a passo de cada release está em [RELEASING.md](RELEASING.md).
 
 ## Recomendado (não bloqueia)
 
-- [ ] **Descrição e tópicos do repo no GitHub** — hoje vazios. Sugestão de
+- [x] **Descrição e tópicos do repo no GitHub** — hoje vazios. Sugestão de
   descrição: "Browse files and git diffs side by side, right in your
   terminal"; tópicos: `git`, `tui`, `terminal`, `diff`, `rust`, `ratatui`.
 - [x] **Confirmar o modelo padrão da IA.** (testado em 2026-10-03) O padrão é `codex` com
   `codex_model = "gpt-6-luna"` (`src/ai/mod.rs`). Se o nome não for válido,
   o `Ctrl-G` falha para todo mundo com a configuração padrão.
-- [ ] **Mostrar o GIF na landing page.** O workflow de Pages já copia
+- [x] **Mostrar o GIF na landing page.** O workflow de Pages já copia
   `demo/demo.gif` para o site, mas `site/index.html` não usa nenhuma imagem.
-- [ ] **Documentar limitações conhecidas** no README, ou resolver na 0.2:
+- [x] **Documentar limitações conhecidas** no README, ou resolver na 0.2:
   - durante um merge em que todas as resoluções ficam iguais ao último
     commit, não sobra nada staged e o commit é bloqueado com
     "Nothing staged", embora um commit de merge fosse válido;

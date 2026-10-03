@@ -111,6 +111,14 @@ timeout_secs = 60
 max_diff_chars = 20000
 ```
 
+## Known limitations
+
+- **No Windows support.** Prebuilt binaries are macOS and Linux only.
+- **Merges that end up identical to `HEAD`.** If every conflict is resolved
+  back to the last commit's version, nothing is left staged and auri
+  refuses the merge commit with "Nothing staged", even though git would
+  accept it. Finish it from the shell with `git commit`.
+
 ## Why "auri"?
 
 Latin for *of gold*. Albireo, the famous double star in Cygnus, shows a
