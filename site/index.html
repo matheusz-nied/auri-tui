@@ -70,6 +70,10 @@
   .nav-links { display: flex; align-items: center; gap: 28px; }
   .nav-links a { font: 500 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); text-decoration: none; transition: color .2s; }
   .nav-links a:hover { color: var(--ink); }
+  .lang { display: flex; border: 1px solid var(--line-2); }
+  .lang button { background: none; border: 0; color: var(--muted); font: 500 11px var(--mono); letter-spacing: .1em; padding: 6px 9px; cursor: pointer; transition: color .2s; }
+  .lang button:hover { color: var(--ink); }
+  .lang button[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 -1px 0 var(--gold); }
   .nav-links .gh { color: var(--ink); border: 1px solid var(--line-2); padding: 6px 12px; }
   .nav-links .gh:hover { border-color: var(--gold); color: var(--gold); }
 
@@ -335,6 +339,7 @@
   @media (max-width: 760px) {
     .wrap { padding: 0 20px; }
     .nav-links a:not(.gh) { display: none; }
+    .nav-links { gap: 12px; }
     .hero { padding-top: 100px; }
     .demo { padding-top: 72px; }
     .screen { grid-template-columns: 1fr; grid-template-rows: 172px minmax(0, 1fr); height: 470px; }
@@ -374,11 +379,12 @@
       auri
     </a>
     <div class="nav-links">
-      <a href="#story">Why “auri”</a>
-      <a href="#features">Features</a>
-      <a href="#uses">Use cases</a>
-      <a href="#keys">Keys</a>
-      <a href="#install">Install</a>
+      <a href="#story" data-i18n="nav.why">Why “auri”</a>
+      <a href="#features" data-i18n="nav.features">Features</a>
+      <a href="#uses" data-i18n="nav.uses">Use cases</a>
+      <a href="#keys" data-i18n="nav.keys">Keys</a>
+      <a href="#install" data-i18n="nav.install">Install</a>
+      <div class="lang" role="group" aria-label="Language"><button type="button" data-lang="en" aria-pressed="true">EN</button><button type="button" data-lang="pt" aria-pressed="false">PT</button></div>
       <a class="gh" href="https://github.com/matheusz-nied/auri-tui">GitHub ↗</a>
     </div>
   </div>
@@ -389,10 +395,10 @@
 <header class="hero">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="label rise"><b style="text-transform:none;letter-spacing:.04em">β Cygni</b> &nbsp;·&nbsp; Terminal UI &nbsp;·&nbsp; v0.1.0</p>
-      <h1 class="rise d1">See what <em>changed.</em></h1>
-      <p class="h1sub rise d1">Right in your terminal.</p>
-      <p class="lead rise d2">auri is a terminal interface for reading a repository — its files, its diffs, its history. <strong>Two views of the same code, side by side.</strong> No editor to open, no browser tab to switch to.</p>
+      <p class="label rise" data-i18n="hero.label"><b style="text-transform:none;letter-spacing:.04em">β Cygni</b> &nbsp;·&nbsp; Terminal UI &nbsp;·&nbsp; v0.1.0</p>
+      <h1 class="rise d1" data-i18n="hero.h1">See the <em>difference.</em></h1>
+      <p class="h1sub rise d1" data-i18n="hero.sub">Right in your terminal.</p>
+      <p class="lead rise d2" data-i18n="hero.lead">auri is a terminal interface for reading a repository — its files, its diffs, its history. <strong>Two views of the same code, side by side.</strong> No editor to open, no browser tab to switch to.</p>
       <div class="install rise d3" data-install>
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected="true" data-cmd="curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh">Shell</button>
@@ -400,19 +406,19 @@
         </div>
         <div class="cmd">
           <code>curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh</code>
-          <button class="copy" type="button">Copy</button>
+          <button class="copy" type="button" data-i18n="copy">Copy</button>
         </div>
       </div>
-      <p class="hero-note rise d3">macOS &amp; Linux. Then run <kbd>auri</kbd> inside any git repository.</p>
+      <p class="hero-note rise d3" data-i18n="hero.note">macOS &amp; Linux. Then run <kbd>auri</kbd> inside any git repository.</p>
     </div>
     <figure class="plate-art rise d2">
       <div class="art" aria-hidden="true">
         <canvas id="dither"></canvas>
         <i class="tk a"></i><i class="tk b"></i><i class="tk c"></i><i class="tk d"></i>
-        <span class="co tl">Fig. 0</span><span class="co tr">Cygnus</span>
-        <span class="co bl">RA 19h 30m 43s</span><span class="co br">Dec +27° 57′ 35″</span>
+        <span class="co tl">Fig. 0</span><span class="co tr" data-i18n="art.cygnus">Cygnus</span>
+        <span class="co bl" data-i18n="art.ra">RA 19h 30m 43s</span><span class="co br">Dec +27° 57′ 35″</span>
       </div>
-      <figcaption><b>Albireo.</b><span>Through a small telescope, one star becomes two — a golden one and a blue one, orbiting side by side.</span></figcaption>
+      <figcaption data-i18n="art.cap"><b>Albireo.</b><span>Through a small telescope, one star becomes two — a golden one and a blue one, orbiting side by side.</span></figcaption>
     </figure>
   </div>
 </header>
@@ -421,15 +427,15 @@
 <section class="demo" id="demo">
   <div class="wrap">
     <div class="demo-head">
-      <span class="label"><b>Fig. 1</b> &nbsp;·&nbsp; auri, running</span>
-      <span class="label">Click it. It’s real enough.</span>
+      <span class="label" data-i18n="demo.fig"><b>Fig. 1</b> &nbsp;·&nbsp; auri, running</span>
+      <span class="label" data-i18n="demo.hint">Click it. It’s real enough.</span>
     </div>
     <div id="termWrap">
       <div class="term" id="term" tabindex="0" role="group" aria-label="Interactive demo of auri. Click it, then use j, k, space, n and c to try it.">
         <div class="tbar">
           <i></i><i></i><i></i>
           <span class="ttl">auri — ~/code/orbit</span>
-          <span class="tb-btns"><button type="button" data-act="demo">▶ demo</button><button type="button" data-act="reset">↻ reset</button></span>
+          <span class="tb-btns"><button type="button" data-act="demo">▶ demo</button><button type="button" data-act="reset" data-i18n="demo.reset">↻ reset</button></span>
         </div>
         <div class="screen" id="screen" aria-hidden="true">
           <div class="side" id="side"></div>
@@ -442,10 +448,10 @@
     </div>
 
     <div class="facts rv">
-      <div><span class="label">Written in</span><strong>Rust · ratatui</strong></div>
-      <div><span class="label">Platforms</span><strong>macOS · Linux</strong></div>
-      <div><span class="label">Git</span><strong>Your own, via the CLI</strong></div>
-      <div><span class="label">License</span><strong>MIT</strong></div>
+      <div><span class="label" data-i18n="facts.written">Written in</span><strong>Rust · ratatui</strong></div>
+      <div><span class="label" data-i18n="facts.platforms">Platforms</span><strong>macOS · Linux</strong></div>
+      <div><span class="label">Git</span><strong data-i18n="facts.git">Your own, via the CLI</strong></div>
+      <div><span class="label" data-i18n="facts.license">License</span><strong>MIT</strong></div>
     </div>
   </div>
 </section>
@@ -469,16 +475,16 @@
         <circle cx="18" cy="82" r="2.6" fill="url(#alb)"/>
         <g id="lbl"><text x="82.5" y="9">DENEB</text><text x="54.5" y="41">SADR</text><text class="hi" x="21" y="80.5">ALBIREO</text></g>
       </svg>
-      <div class="orb gold" id="orbG"><i class="glow"></i><span class="olab">A · golden · mag 3.1</span></div>
-      <div class="orb blue" id="orbB"><i class="glow"></i><span class="olab">B · blue · mag 5.1</span></div>
+      <div class="orb gold" id="orbG"><i class="glow"></i><span class="olab" data-i18n="orb.a">A · golden · mag 3.1</span></div>
+      <div class="orb blue" id="orbB"><i class="glow"></i><span class="olab" data-i18n="orb.b">B · blue · mag 5.1</span></div>
       <div class="pn old" id="pnOld"></div>
       <div class="pn new" id="pnNew"></div>
     </div>
     <div class="caps" id="caps">
-      <div class="capn on"><span class="label">I · Cygnus</span><h2>Look up. One point of light.</h2><p>At the beak of the Swan sits a star that looks like just one.</p></div>
-      <div class="capn"><span class="label">II · Albireo</span><h2>Look closer. It’s <em>two.</em></h2><p>Through a small telescope the point splits: a golden star and a blue one, side by side.</p></div>
-      <div class="capn"><span class="label">III · Two views</span><h2>Same spot. Two views.</h2><p>Each one shows what the other doesn’t. Put them next to each other and the difference is obvious.</p></div>
-      <div class="capn"><span class="label">IV · auri</span><h2>That’s a diff. That’s <em>auri.</em></h2><p><span style="color:var(--ink)">Auri</span> is Latin for <span style="color:var(--ink)">of gold</span>. A terminal UI for seeing exactly what changed.</p><a class="btn" href="#install">Install auri ↓</a></div>
+      <div class="capn on"><span class="label" data-i18n="st1.l">I · Cygnus</span><h2 data-i18n="st1.h">Look up. One point of light.</h2><p data-i18n="st1.p">At the beak of the Swan sits a star that looks like just one.</p></div>
+      <div class="capn"><span class="label">II · Albireo</span><h2 data-i18n="st2.h">Look closer. It’s <em>two.</em></h2><p data-i18n="st2.p">Through a small telescope the point splits: a golden star and a blue one, side by side.</p></div>
+      <div class="capn"><span class="label" data-i18n="st3.l">III · Two views</span><h2 data-i18n="st3.h">Same spot. Two views.</h2><p data-i18n="st3.p">Each one shows what the other doesn’t. Put them next to each other and the difference is obvious.</p></div>
+      <div class="capn"><span class="label">IV · auri</span><h2 data-i18n="st4.h">That’s a diff. That’s <em>auri.</em></h2><p data-i18n="st4.p"><span style="color:var(--ink)">Auri</span> is Latin for <span style="color:var(--ink)">of gold</span>. A terminal UI for seeing exactly what changed.</p><a class="btn" href="#install" data-i18n="st4.btn">Install auri ↓</a></div>
     </div>
     <div class="dots" id="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i></div>
   </div>
@@ -488,17 +494,17 @@
 <section class="sec" id="features">
   <div class="wrap">
     <div class="sec-head rv">
-      <span class="label"><b>§ 02</b> &nbsp;·&nbsp; Features</span>
-      <div><h2>Everything you need to read a repo.</h2><p class="sub">And nothing you don’t. auri isn’t an editor — it’s the place you go to look at your code and what changed in it.</p></div>
+      <span class="label" data-i18n="f.label"><b>§ 02</b> &nbsp;·&nbsp; Features</span>
+      <div><h2 data-i18n="f.h">Everything you need to read a repo.</h2><p class="sub" data-i18n="f.sub">And nothing you don’t. auri isn’t an editor — it’s the place you go to look at your code and what changed in it.</p></div>
     </div>
 
     <div class="plates">
       <article class="plate w4 rv">
         <div class="label"><span>Fig. 2</span><span>Diff</span></div>
-        <h3>Side-by-side diffs</h3>
-        <p>Old on the left, new on the right, highlighted with the same grammars <span class="mono" style="font-size:13px;color:var(--ink)">bat</span> uses. Jump straight to the next change with <kbd>n</kbd> / <kbd>N</kbd>.</p>
+        <h3 data-i18n="p1.h">Side-by-side diffs</h3>
+        <p data-i18n="p1.p">Old on the left, new on the right, highlighted with the same grammars <span class="mono" style="font-size:13px;color:var(--ink)">bat</span> uses. Jump straight to the next change with <kbd>n</kbd> / <kbd>N</kbd>.</p>
         <div class="viz" aria-hidden="true">
-          <span class="chip">change 1/2</span>
+          <span class="chip" data-i18n="p1.chip">change 1/2</span>
           <div class="vd">
             <div>
               <div class="l"><b>3</b><span><span class="cm">/// Distance in parsecs.</span></span></div>
@@ -523,9 +529,9 @@
       </article>
 
       <article class="plate rv">
-        <div class="label"><span>Fig. 3</span><span>Tree</span></div>
-        <h3>File explorer</h3>
-        <p>A lazy tree with git status on every row and a highlighted, read-only viewer.</p>
+        <div class="label"><span>Fig. 3</span><span data-i18n="p.tree">Tree</span></div>
+        <h3 data-i18n="p2.h">File explorer</h3>
+        <p data-i18n="p2.p">A lazy tree with git status on every row and a highlighted, read-only viewer.</p>
         <div class="viz" aria-hidden="true">
           <div class="row"><span><span class="dim">▾</span> src</span><span class="M">•</span></div>
           <div class="row"><span style="padding-left:14px"><i class="ib" style="color:#b59a7a">rs</i>lib.rs</span></div>
@@ -537,11 +543,11 @@
       </article>
 
       <article class="plate rv">
-        <div class="label"><span>Fig. 4</span><span>Index</span></div>
-        <h3>Stage &amp; commit</h3>
-        <p>Stage, unstage and discard — with a confirmation. Merge conflicts get their own section.</p>
+        <div class="label"><span>Fig. 4</span><span data-i18n="p.index">Index</span></div>
+        <h3 data-i18n="p3.h">Stage &amp; commit</h3>
+        <p data-i18n="p3.p">Stage, unstage and discard — with a confirmation. Merge conflicts get their own section.</p>
         <div class="viz" id="vzStage" aria-hidden="true">
-          <div class="row dim"><span>CHANGES</span><span><kbd id="spaceKey">space</kbd></span></div>
+          <div class="row dim"><span data-i18n="p3.changes">CHANGES</span><span><kbd id="spaceKey">space</kbd></span></div>
           <div class="row sr"><span class="M">src/orbit.rs</span><span class="tag">M</span></div>
           <div class="row sr"><span class="M">src/star.rs</span><span class="tag">M</span></div>
           <div class="row sr"><span class="D">legacy/old.rs</span><span class="tag" style="color:var(--del-fg);border-color:rgba(201,141,132,.4)">D</span></div>
@@ -550,8 +556,8 @@
 
       <article class="plate rv">
         <div class="label"><span>Fig. 5</span><span>Log</span></div>
-        <h3>History</h3>
-        <p>Every commit, every file it touched, every diff. One keypress away.</p>
+        <h3 data-i18n="p4.h">History</h3>
+        <p data-i18n="p4.p">Every commit, every file it touched, every diff. One keypress away.</p>
         <div class="viz hist" aria-hidden="true">
           <div class="row"><span class="g1"><span class="M">a1f3c9e</span> feat: parallax</span><span class="dim">2h</span></div>
           <div class="row"><span class="g1"><span class="M">7bd20e4</span> fix: epoch</span><span class="dim">1d</span></div>
@@ -560,30 +566,30 @@
       </article>
 
       <article class="plate rv">
-        <div class="label"><span>Fig. 6</span><span>Watch</span></div>
-        <h3>Live refresh</h3>
-        <p>auri re-reads git every couple of seconds. Edit elsewhere and watch the list update.</p>
+        <div class="label"><span>Fig. 6</span><span data-i18n="p.watch">Watch</span></div>
+        <h3 data-i18n="p5.h">Live refresh</h3>
+        <p data-i18n="p5.p">auri re-reads git every couple of seconds. Edit elsewhere and watch the list update.</p>
         <div class="viz" id="vzLive" aria-hidden="true" style="min-height:106px"></div>
       </article>
 
       <article class="plate w3 rv">
-        <div class="label"><span>Fig. 7</span><span>Optional</span></div>
-        <h3>AI commit drafts</h3>
-        <p>Press <kbd>Ctrl-G</kbd> and Codex CLI or opencode drafts a one-line message from your staged diff. It only fills the box — <span style="color:var(--ink)">it never commits for you</span>. <kbd>Ctrl-T</kbd> swaps the provider.</p>
+        <div class="label"><span>Fig. 7</span><span data-i18n="p.opt">Optional</span></div>
+        <h3 data-i18n="p6.h">AI commit drafts</h3>
+        <p data-i18n="p6.p">Press <kbd>Ctrl-G</kbd> and Codex CLI or opencode drafts a one-line message from your staged diff. It only fills the box — <span style="color:var(--ink)">it never commits for you</span>. <kbd>Ctrl-T</kbd> swaps the provider.</p>
         <div class="viz" id="vzAi" aria-hidden="true" style="padding:14px 0">
           <div class="aibox"><span class="g" id="aiSpin">✦</span><span class="typed" id="aiTyped"></span></div>
-          <div class="row dim" style="margin-top:10px"><span>provider: <span class="g">codex</span> ⇄ opencode</span><span>optional</span></div>
+          <div class="row dim" style="margin-top:10px"><span data-i18n="p6.prov">provider: <span class="g">codex</span> ⇄ opencode</span><span data-i18n="p6.opt">optional</span></div>
         </div>
       </article>
 
       <article class="plate w3 rv">
-        <div class="label"><span>Fig. 8</span><span>Input</span></div>
-        <h3>Keyboard or mouse</h3>
-        <p>Vim-style keys, or click everything. Drag the dividers — your layout is remembered between sessions.</p>
+        <div class="label"><span>Fig. 8</span><span data-i18n="p.input">Input</span></div>
+        <h3 data-i18n="p7.h">Keyboard or mouse</h3>
+        <p data-i18n="p7.p">Vim-style keys, or click everything. Drag the dividers — your layout is remembered between sessions.</p>
         <div class="viz split" id="vzSplit" style="padding:0">
-          <div><span class="dim">EXPLORER</span><br>▾ src<br>&nbsp;&nbsp;lib.rs<br>&nbsp;&nbsp;<span class="M">orbit.rs</span><br>&nbsp;&nbsp;star.rs</div>
+          <div><span class="dim" data-i18n="p7.exp">EXPLORER</span><br>▾ src<br>&nbsp;&nbsp;lib.rs<br>&nbsp;&nbsp;<span class="M">orbit.rs</span><br>&nbsp;&nbsp;star.rs</div>
           <div class="grip" id="grip" role="separator" aria-label="Drag to resize"></div>
-          <div><span class="dim">DIFF</span><br><span class="kw">pub fn</span> <span class="fn">distance</span>(px) {<br>&nbsp;&nbsp;<span class="dim">← drag the divider</span><br>}</div>
+          <div><span class="dim">DIFF</span><br><span class="kw">pub fn</span> <span class="fn">distance</span>(px) {<br>&nbsp;&nbsp;<span class="dim" data-i18n="p7.drag">← drag the divider</span><br>}</div>
         </div>
       </article>
     </div>
@@ -594,13 +600,13 @@
 <section class="sec" id="uses">
   <div class="wrap">
     <div class="sec-head rv">
-      <span class="label"><b>§ 03</b> &nbsp;·&nbsp; Use cases</span>
-      <div><h2>Reach for it when you need to <em>look.</em></h2><p class="sub">Small enough to leave open in a pane all day.</p></div>
+      <span class="label" data-i18n="u.label"><b>§ 03</b> &nbsp;·&nbsp; Use cases</span>
+      <div><h2 data-i18n="u.h">Reach for it when you need to <em>look.</em></h2><p class="sub" data-i18n="u.sub">Small enough to leave open in a pane all day.</p></div>
     </div>
     <div class="uses">
-      <div class="use rv"><div class="num">i.</div><h3>Before you commit</h3><p>Stage exactly what you mean to. Read your own diff side by side, then commit — with an optional AI draft of the message that you always review.</p></div>
-      <div class="use rv"><div class="num">ii.</div><h3>While an agent codes</h3><p>Keep auri open in a split next to Codex or opencode (<code>tmux</code>, Zellij, your terminal’s panes). It refreshes on its own, so every change lands in front of you.</p></div>
-      <div class="use rv"><div class="num">iii.</div><h3>After a pull</h3><p>Browse history, open any commit and see the diff of every file it touched — no <code>git log</code> incantations to remember.</p></div>
+      <div class="use rv"><div class="num">i.</div><h3 data-i18n="u1.h">Before you commit</h3><p data-i18n="u1.p">Stage exactly what you mean to. Read your own diff side by side, then commit — with an optional AI draft of the message that you always review.</p></div>
+      <div class="use rv"><div class="num">ii.</div><h3 data-i18n="u2.h">While an agent codes</h3><p data-i18n="u2.p">Keep auri open in a split next to Codex or opencode (<code>tmux</code>, Zellij, your terminal’s panes). It refreshes on its own, so every change lands in front of you.</p></div>
+      <div class="use rv"><div class="num">iii.</div><h3 data-i18n="u3.h">After a pull</h3><p data-i18n="u3.p">Browse history, open any commit and see the diff of every file it touched — no <code>git log</code> incantations to remember.</p></div>
     </div>
   </div>
 </section>
@@ -609,33 +615,33 @@
 <section class="sec" id="keys">
   <div class="wrap">
     <div class="sec-head rv">
-      <span class="label"><b>§ 04</b> &nbsp;·&nbsp; Keys</span>
-      <div><h2>A handful of <em>keys.</em></h2><p class="sub">Run <kbd>auri --help</kbd> for the essentials. Go on — press some of these keys right now.</p></div>
+      <span class="label" data-i18n="k.label"><b>§ 04</b> &nbsp;·&nbsp; Keys</span>
+      <div><h2 data-i18n="k.h">A handful of <em>keys.</em></h2><p class="sub" data-i18n="k.sub">Run <kbd>auri --help</kbd> for the essentials. Go on — press some of these keys right now.</p></div>
     </div>
     <div class="kgrid rv">
       <div class="kg">
-        <span class="label">Navigate</span>
-        <div class="kr"><span>Explorer</span><div><i class="cap-k" data-k="e">e</i></div></div>
-        <div class="kr"><span>Source control</span><div><i class="cap-k" data-k="c">c</i></div></div>
-        <div class="kr"><span>Focus panels</span><div><i class="cap-k" data-k="1">1</i><i class="cap-k" data-k="2">2</i><i class="cap-k" data-k="3">3</i></div></div>
-        <div class="kr"><span>Move</span><div><i class="cap-k" data-k="j">j</i><i class="cap-k" data-k="k">k</i></div></div>
-        <div class="kr"><span>Top / bottom</span><div><i class="cap-k" data-k="g">g</i><i class="cap-k" data-k="G">G</i></div></div>
+        <span class="label" data-i18n="k.nav">Navigate</span>
+        <div class="kr"><span data-i18n="k.explorer">Explorer</span><div><i class="cap-k" data-k="e">e</i></div></div>
+        <div class="kr"><span data-i18n="k.source">Source control</span><div><i class="cap-k" data-k="c">c</i></div></div>
+        <div class="kr"><span data-i18n="k.focus">Focus panels</span><div><i class="cap-k" data-k="1">1</i><i class="cap-k" data-k="2">2</i><i class="cap-k" data-k="3">3</i></div></div>
+        <div class="kr"><span data-i18n="k.move">Move</span><div><i class="cap-k" data-k="j">j</i><i class="cap-k" data-k="k">k</i></div></div>
+        <div class="kr"><span data-i18n="k.topbot">Top / bottom</span><div><i class="cap-k" data-k="g">g</i><i class="cap-k" data-k="G">G</i></div></div>
       </div>
       <div class="kg">
-        <span class="label">Act</span>
+        <span class="label" data-i18n="k.act">Act</span>
         <div class="kr"><span>Stage / unstage</span><div><i class="cap-k" data-k="space">space</i></div></div>
-        <div class="kr"><span>Stage all</span><div><i class="cap-k" data-k="a">a</i></div></div>
-        <div class="kr"><span>Next / prev change</span><div><i class="cap-k" data-k="n">n</i><i class="cap-k" data-k="N">N</i></div></div>
-        <div class="kr"><span>Draft message with AI</span><div><i class="cap-k" data-k="ctrl+g">Ctrl-G</i></div></div>
-        <div class="kr"><span>Open / commit</span><div><i class="cap-k" data-k="enter">⏎</i></div></div>
+        <div class="kr"><span data-i18n="k.stageall">Stage all</span><div><i class="cap-k" data-k="a">a</i></div></div>
+        <div class="kr"><span data-i18n="k.next">Next / prev change</span><div><i class="cap-k" data-k="n">n</i><i class="cap-k" data-k="N">N</i></div></div>
+        <div class="kr"><span data-i18n="k.ai">Draft message with AI</span><div><i class="cap-k" data-k="ctrl+g">Ctrl-G</i></div></div>
+        <div class="kr"><span data-i18n="k.open">Open / commit</span><div><i class="cap-k" data-k="enter">⏎</i></div></div>
       </div>
       <div class="kg">
         <span class="label">Layout</span>
-        <div class="kr"><span>Toggle sidebar</span><div><i class="cap-k" data-k="b">b</i></div></div>
-        <div class="kr"><span>Resize sidebar</span><div><i class="cap-k" data-k="[">[</i><i class="cap-k" data-k="]">]</i></div></div>
-        <div class="kr"><span>Refresh</span><div><i class="cap-k" data-k="r">r</i></div></div>
-        <div class="kr"><span>Quit</span><div><i class="cap-k" data-k="q">q</i></div></div>
-        <div class="kr"><span>Resize panes</span><div><i class="cap-k" style="font-size:11px">drag</i></div></div>
+        <div class="kr"><span data-i18n="k.sidebar">Toggle sidebar</span><div><i class="cap-k" data-k="b">b</i></div></div>
+        <div class="kr"><span data-i18n="k.resizesb">Resize sidebar</span><div><i class="cap-k" data-k="[">[</i><i class="cap-k" data-k="]">]</i></div></div>
+        <div class="kr"><span data-i18n="k.refresh">Refresh</span><div><i class="cap-k" data-k="r">r</i></div></div>
+        <div class="kr"><span data-i18n="k.quit">Quit</span><div><i class="cap-k" data-k="q">q</i></div></div>
+        <div class="kr"><span data-i18n="k.panes">Resize panes</span><div><i class="cap-k" style="font-size:11px" data-i18n="k.drag">drag</i></div></div>
       </div>
     </div>
   </div>
@@ -644,13 +650,13 @@
 <!-- ═══════════════ INSTALL / CTA ═══════════════ -->
 <section class="cta" id="install">
   <div class="wrap">
-    <p class="label rv"><b>§ 05</b> &nbsp;·&nbsp; Free &amp; open source</p>
-    <h2 class="rv">Take a <em>look.</em></h2>
-    <p class="sub rv">Three steps and you’re looking at your diffs.</p>
+    <p class="label rv" data-i18n="c.label"><b>§ 05</b> &nbsp;·&nbsp; Free &amp; open source</p>
+    <h2 class="rv" data-i18n="c.h">Take a <em>look.</em></h2>
+    <p class="sub rv" data-i18n="c.sub">Three steps and you’re looking at your diffs.</p>
     <div class="steps rv">
-      <div class="step"><span class="label">1 · Install</span><code>cargo install auri-tui</code></div>
-      <div class="step"><span class="label">2 · Go to a repo</span><code>cd my-project</code></div>
-      <div class="step"><span class="label">3 · Look</span><code>auri <span class="cur"></span></code></div>
+      <div class="step"><span class="label" data-i18n="c.s1">1 · Install</span><code>cargo install auri-tui</code></div>
+      <div class="step"><span class="label" data-i18n="c.s2">2 · Go to a repo</span><code>cd my-project</code></div>
+      <div class="step"><span class="label" data-i18n="c.s3">3 · Look</span><code>auri <span class="cur"></span></code></div>
     </div>
     <div class="install rv" data-install>
       <div class="tabs" role="tablist">
@@ -659,21 +665,21 @@
       </div>
       <div class="cmd">
         <code>curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh</code>
-        <button class="copy" type="button">Copy</button>
+        <button class="copy" type="button" data-i18n="copy">Copy</button>
       </div>
     </div>
     <div class="rv">
-      <a class="btn" href="https://github.com/matheusz-nied/auri-tui/releases">Download a release</a>
-      <a class="btn ghost" href="https://github.com/matheusz-nied/auri-tui">Star on GitHub ★</a>
+      <a class="btn" href="https://github.com/matheusz-nied/auri-tui/releases" data-i18n="c.dl">Download a release</a>
+      <a class="btn ghost" href="https://github.com/matheusz-nied/auri-tui" data-i18n="c.star">Star on GitHub ★</a>
     </div>
-    <p class="req rv">Needs <span class="mono" style="color:var(--ink)">git</span> on your PATH. A true-color terminal gives the best highlighting.</p>
+    <p class="req rv" data-i18n="c.req">Needs <span class="mono" style="color:var(--ink)">git</span> on your PATH. A true-color terminal gives the best highlighting.</p>
   </div>
 </section>
 </main>
 
 <footer>
   <div class="wrap">
-    <span class="label"><b>auri</b> &nbsp;·&nbsp; MIT &nbsp;·&nbsp; <span style="text-transform:none;letter-spacing:.04em">β Cygni</span>, ≈ 430 light-years away</span>
+    <span class="label" data-i18n="foot"><b>auri</b> &nbsp;·&nbsp; MIT &nbsp;·&nbsp; <span style="text-transform:none;letter-spacing:.04em">β Cygni</span>, ≈ 430 light-years away</span>
     <span class="label"><a href="https://github.com/matheusz-nied/auri-tui/releases">Releases</a> &nbsp;·&nbsp; <a href="https://github.com/matheusz-nied/auri-tui/blob/main/CHANGELOG.md">Changelog</a> &nbsp;·&nbsp; <a href="https://github.com/matheusz-nied/auri-tui">GitHub</a></span>
   </div>
 </footer>
@@ -691,6 +697,189 @@
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const fine = matchMedia('(pointer: fine)').matches;
 
+  /* ── i18n (en / pt) ───────────────────────────────────────────── */
+  const PT_HTML = {
+ "nav.why": "Por que “auri”",
+ "nav.features": "Recursos",
+ "nav.uses": "Casos de uso",
+ "nav.keys": "Atalhos",
+ "nav.install": "Instalar",
+ "hero.label": "<b style=\"text-transform:none;letter-spacing:.04em\">β Cygni</b> &nbsp;·&nbsp; UI de terminal &nbsp;·&nbsp; v0.1.0",
+ "hero.h1": "Veja a <em>diferença.</em>",
+ "hero.sub": "Direto no seu terminal.",
+ "hero.lead": "auri é uma interface de terminal para ler um repositório — seus arquivos, seus diffs, seu histórico. <strong>Duas visões do mesmo código, lado a lado.</strong> Sem abrir um editor, sem trocar de aba do navegador.",
+ "copy": "Copiar",
+ "hero.note": "macOS &amp; Linux. Depois rode <kbd>auri</kbd> dentro de qualquer repositório git.",
+ "art.cygnus": "Cisne",
+ "art.ra": "AR 19h 30m 43s",
+ "art.cap": "<b>Albireo.</b><span>Num telescópio pequeno, uma estrela vira duas — uma dourada e uma azul, orbitando lado a lado.</span>",
+ "demo.fig": "<b>Fig. 1</b> &nbsp;·&nbsp; auri, em execução",
+ "demo.hint": "Clique nele. É real o bastante.",
+ "demo.reset": "↻ reiniciar",
+ "facts.written": "Escrito em",
+ "facts.platforms": "Plataformas",
+ "facts.license": "Licença",
+ "facts.git": "O seu, via CLI",
+ "st1.l": "I · Cisne",
+ "st1.h": "Olhe para cima. Um ponto de luz.",
+ "st1.p": "No bico do Cisne há uma estrela que parece ser só uma.",
+ "st2.h": "Olhe de perto. São <em>duas.</em>",
+ "st2.p": "Num telescópio pequeno o ponto se divide: uma estrela dourada e uma azul, lado a lado.",
+ "st3.l": "III · Duas visões",
+ "st3.h": "Mesmo lugar. Duas visões.",
+ "st3.p": "Cada uma mostra o que a outra não mostra. Coloque-as lado a lado e a diferença fica óbvia.",
+ "st4.h": "Isso é um diff. Isso é o <em>auri.</em>",
+ "st4.p": "<span style=\"color:var(--ink)\">Auri</span> é latim para <span style=\"color:var(--ink)\">de ouro</span>. Uma UI de terminal para ver exatamente o que mudou.",
+ "st4.btn": "Instalar o auri ↓",
+ "orb.a": "A · dourada · mag 3,1",
+ "orb.b": "B · azul · mag 5,1",
+ "f.label": "<b>§ 02</b> &nbsp;·&nbsp; Recursos",
+ "f.h": "Tudo o que você precisa para ler um repositório.",
+ "f.sub": "E nada além disso. O auri não é um editor — é o lugar onde você olha seu código e o que mudou nele.",
+ "p.tree": "Árvore",
+ "p.index": "Índice",
+ "p.watch": "Monitor",
+ "p.opt": "Opcional",
+ "p.input": "Entrada",
+ "p1.h": "Diffs lado a lado",
+ "p1.p": "Antigo à esquerda, novo à direita, com realce das mesmas gramáticas que o <span class=\"mono\" style=\"font-size:13px;color:var(--ink)\">bat</span> usa. Pule direto para a próxima mudança com <kbd>n</kbd> / <kbd>N</kbd>.",
+ "p1.chip": "mudança 1/2",
+ "p2.h": "Explorador de arquivos",
+ "p2.p": "Uma árvore carregada sob demanda, com status do git em cada linha e um visualizador somente leitura com realce de sintaxe.",
+ "p3.h": "Stage &amp; commit",
+ "p3.p": "Faça stage, unstage e descarte — com confirmação. Conflitos de merge ganham uma seção própria.",
+ "p3.changes": "MUDANÇAS",
+ "p4.h": "Histórico",
+ "p4.p": "Cada commit, cada arquivo que ele tocou, cada diff. A uma tecla de distância.",
+ "p5.h": "Atualização ao vivo",
+ "p5.p": "O auri relê o git a cada poucos segundos. Edite em outro lugar e veja a lista atualizar.",
+ "p6.h": "Rascunhos de commit com IA",
+ "p6.p": "Aperte <kbd>Ctrl-G</kbd> e o Codex CLI ou o opencode redige uma mensagem de uma linha a partir do seu diff em stage. Ele só preenche a caixa — <span style=\"color:var(--ink)\">nunca faz o commit por você</span>. <kbd>Ctrl-T</kbd> troca o provedor.",
+ "p6.prov": "provedor: <span class=\"g\">codex</span> ⇄ opencode",
+ "p6.opt": "opcional",
+ "p7.h": "Teclado ou mouse",
+ "p7.p": "Teclas no estilo Vim, ou clique em tudo. Arraste os divisores — seu layout é lembrado entre sessões.",
+ "p7.exp": "EXPLORADOR",
+ "p7.drag": "← arraste o divisor",
+ "u.label": "<b>§ 03</b> &nbsp;·&nbsp; Casos de uso",
+ "u.h": "Use quando você precisa <em>olhar.</em>",
+ "u.sub": "Pequeno o bastante para ficar aberto num painel o dia todo.",
+ "u1.h": "Antes de commitar",
+ "u1.p": "Faça stage exatamente do que pretende. Leia seu próprio diff lado a lado e então commite — com um rascunho opcional da mensagem por IA, que você sempre revisa.",
+ "u2.h": "Enquanto um agente programa",
+ "u2.p": "Deixe o auri aberto num painel ao lado do Codex ou do opencode (<code>tmux</code>, Zellij, os painéis do seu terminal). Ele se atualiza sozinho, então cada mudança aparece na sua frente.",
+ "u3.h": "Depois de um pull",
+ "u3.p": "Navegue pelo histórico, abra qualquer commit e veja o diff de cada arquivo que ele tocou — sem decorar comandos de <code>git log</code>.",
+ "k.label": "<b>§ 04</b> &nbsp;·&nbsp; Atalhos",
+ "k.h": "Um punhado de <em>atalhos.</em>",
+ "k.sub": "Rode <kbd>auri --help</kbd> para o essencial. Vá em frente — aperte algumas dessas teclas agora.",
+ "k.nav": "Navegar",
+ "k.act": "Agir",
+ "k.explorer": "Explorador",
+ "k.source": "Controle de versão",
+ "k.focus": "Focar painéis",
+ "k.move": "Mover",
+ "k.topbot": "Topo / fim",
+ "k.stageall": "Stage em tudo",
+ "k.next": "Próxima / anterior mudança",
+ "k.ai": "Rascunho da mensagem com IA",
+ "k.open": "Abrir / commitar",
+ "k.sidebar": "Alternar barra lateral",
+ "k.resizesb": "Redimensionar barra lateral",
+ "k.refresh": "Atualizar",
+ "k.quit": "Sair",
+ "k.panes": "Redimensionar painéis",
+ "k.drag": "arrastar",
+ "c.label": "<b>§ 05</b> &nbsp;·&nbsp; Gratuito &amp; código aberto",
+ "c.h": "Dê uma <em>olhada.</em>",
+ "c.sub": "Três passos e você já está vendo seus diffs.",
+ "c.s1": "1 · Instale",
+ "c.s2": "2 · Entre num repositório",
+ "c.s3": "3 · Olhe",
+ "c.dl": "Baixar uma release",
+ "c.star": "Dar uma estrela no GitHub ★",
+ "c.req": "Precisa do <span class=\"mono\" style=\"color:var(--ink)\">git</span> no seu PATH. Um terminal true color dá o melhor realce de sintaxe.",
+ "foot": "<b>auri</b> &nbsp;·&nbsp; MIT &nbsp;·&nbsp; <span style=\"text-transform:none;letter-spacing:.04em\">β Cygni</span>, a ≈ 430 anos-luz"
+};
+  const PT = {
+ "Copy": "Copiar",
+ "Copied ✓": "Copiado ✓",
+ "Select & copy": "Selecione e copie",
+ "Explorer": "Explorador",
+ "Source Control": "Controle de versão",
+ "drafting from staged diff…": "redigindo a partir do diff em stage…",
+ "Message (⏎ to commit)": "Mensagem (⏎ para commitar)",
+ "Draft with AI (Ctrl-G)": "Rascunho com IA (Ctrl-G)",
+ "Commit": "Commitar",
+ "STAGED CHANGES": "MUDANÇAS EM STAGE",
+ "CHANGES": "MUDANÇAS",
+ "HISTORY": "HISTÓRICO",
+ "✓ Working tree clean.<br>Press ↻ reset to replay.": "✓ Árvore de trabalho limpa.<br>Aperte ↻ reiniciar para repetir.",
+ "Nothing open": "Nada aberto",
+ "Select a file to see its diff": "Selecione um arquivo para ver o diff",
+ "Open a file from the tree": "Abra um arquivo da árvore",
+ " lines": " linhas",
+ "staged": "em stage",
+ "change": "mudança",
+ "commit": "commitar",
+ "✦ draft": "✦ rascunho",
+ "back": "voltar",
+ "scroll": "rolar",
+ "next change": "próxima mudança",
+ "list": "lista",
+ "explorer": "explorador",
+ "tree": "árvore",
+ "move": "mover",
+ "open": "abrir",
+ "expand": "expandir",
+ "git": "git",
+ "stage": "stage",
+ "Staged ": "Stage: ",
+ "Unstaged ": "Unstage: ",
+ "Staged all changes": "Stage em todas as mudanças",
+ "Back to the first change": "De volta à primeira mudança",
+ "Nothing staged — stage a file first (space)": "Nada em stage — faça stage de um arquivo primeiro (space)",
+ "✦ Draft ready — review it, then ⏎ to commit": "✦ Rascunho pronto — revise e aperte ⏎ para commitar",
+ "Nothing staged": "Nada em stage",
+ "Write a message first — or press ^G for a draft": "Escreva uma mensagem antes — ou aperte ^G para um rascunho",
+ "✓ Committed ": "✓ Commit feito ",
+ "Cancelled": "Cancelado",
+ "q quits auri — this demo keeps going ✦": "q fecha o auri — este demo continua ✦",
+ "Refreshed": "Atualizado",
+ "Live demo — click the terminal to take over": "Demo ao vivo — clique no terminal para assumir o controle",
+ "Click the terminal, then press <kbd>j</kbd><kbd>k</kbd> to move, <kbd>space</kbd> to stage, <kbd>n</kbd> for the next change, <kbd>c</kbd> to commit": "Clique no terminal e aperte <kbd>j</kbd><kbd>k</kbd> para mover, <kbd>space</kbd> para stage, <kbd>n</kbd> para a próxima mudança, <kbd>c</kbd> para commitar",
+ "Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ draft": "Sua vez — <kbd>j</kbd><kbd>k</kbd> mover · <kbd>space</kbd> stage · <kbd>n</kbd> próxima mudança · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ rascunho",
+ "before": "antes",
+ "after": "depois",
+ "Working tree": "Árvore de trabalho",
+ "● watching…": "● observando…"
+};
+  const ARIA = [["#term", "Interactive demo of auri. Click it, then use j, k, space, n and c to try it.", "Demo interativo do auri. Clique nele e use j, k, space, n e c para experimentar."], ["#story", "Why the name auri: Albireo, a double star, is a diff between two views", "Por que o nome auri: Albireo, uma estrela dupla, é um diff entre duas visões"], ["#grip", "Drag to resize", "Arraste para redimensionar"], [".lang", "Language", "Idioma"]];
+  const META = [["title", null, "auri — git diffs in your terminal", "auri — diffs do git no seu terminal"], ["meta[name=\"description\"]", "content", null, "auri é uma UI de terminal para explorar seu repositório e revisar diffs do git lado a lado. Explorador, controle de versão, histórico e rascunhos de commit com IA (opcional) — sem editor, sem navegador."], ["meta[property=\"og:title\"]", "content", null, "auri — diffs do git no seu terminal"], ["meta[property=\"og:description\"]", "content", null, "Explore seu repositório e revise diffs do git lado a lado, direto no terminal."]];
+  const store = { get() { try { return localStorage.getItem('auri-lang'); } catch (_) { return null; } }, set(v) { try { localStorage.setItem('auri-lang', v); } catch (_) { /* private mode */ } } };
+  const pickLang = () => {
+    const q = new URLSearchParams(location.search).get('lang'); if (q === 'pt' || q === 'en') return q;
+    const st = store.get(); if (st === 'pt' || st === 'en') return st;
+    return (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'en']).some(l => /^pt/i.test(l)) ? 'pt' : 'en';
+  };
+  let lang = pickLang();
+  const tr = s => (lang === 'pt' && PT[s]) || s;
+  const langHooks = [];
+  const I18N = $$('[data-i18n]'); I18N.forEach(el => { el.dataset.en = el.innerHTML; });
+  const metaEn = META.map(([sel, attr]) => { const el = $(sel); return el ? (attr ? el.getAttribute(attr) : el.textContent) : null; });
+  const ariaEn = ARIA.map(([sel]) => { const el = $(sel); return el ? el.getAttribute('aria-label') : null; });
+  function applyLang(l) {
+    lang = l;
+    document.documentElement.lang = l === 'pt' ? 'pt-BR' : 'en';
+    I18N.forEach(el => { el.innerHTML = l === 'pt' && PT_HTML[el.dataset.i18n] != null ? PT_HTML[el.dataset.i18n] : el.dataset.en; });
+    META.forEach(([sel, attr, , pt], i) => { const el = $(sel); if (!el) return; const v = l === 'pt' ? pt : metaEn[i]; if (attr) el.setAttribute(attr, v); else el.textContent = v; });
+    ARIA.forEach(([sel, , pt], i) => { const el = $(sel); if (el) el.setAttribute('aria-label', l === 'pt' ? pt : ariaEn[i]); });
+    $$('.lang button').forEach(b => b.setAttribute('aria-pressed', b.dataset.lang === l));
+    langHooks.forEach(f => f());
+  }
+  $$('.lang button').forEach(b => b.addEventListener('click', () => { store.set(b.dataset.lang); applyLang(b.dataset.lang); }));
+
+  
   /* ── syntax highlighting (tiny, just for the demos) ───────────── */
   const LANG = {
     rs: { re: /(\/\/.*$)|("(?:[^"\\]|\\.)*")|\b(pub|fn|let|mut|use|struct|impl|self|as|crate|true|false)\b|\b(f64|f32|u32|u64|usize|i32|str|bool|char|Self|[A-Z][A-Za-z0-9_]*)\b|\b(\d[\d_.]*)\b|\b([a-z_][a-z0-9_]*)(?=\()|(#\[.*\])/g,
@@ -760,9 +949,9 @@
     const code = $('code', box), btn = $('.copy', box), tabs = $$('.tabs button', box);
     tabs.forEach(t => t.addEventListener('click', () => { tabs.forEach(o => o.setAttribute('aria-selected', o === t)); code.textContent = t.dataset.cmd; }));
     btn.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(code.textContent); btn.textContent = 'Copied ✓'; }
-      catch { btn.textContent = 'Select & copy'; }
-      setTimeout(() => btn.textContent = 'Copy', 1600);
+      try { await navigator.clipboard.writeText(code.textContent); btn.textContent = tr('Copied ✓'); }
+      catch { btn.textContent = tr('Select & copy'); }
+      setTimeout(() => btn.textContent = tr('Copy'), 1600);
     });
   });
 
@@ -883,19 +1072,19 @@
   const MAXC = 24;
   function renderSide() {
     const sel = S.sel[S.view];
-    let h = `<div class="vtabs"><button data-act="tab" data-v="exp" class="${S.view === 'exp' ? 'on' : ''}">Explorer</button><button data-act="tab" data-v="git" class="${S.view === 'git' ? 'on' : ''}">Source Control</button></div>`;
+    let h = `<div class="vtabs"><button data-act="tab" data-v="exp" class="${S.view === 'exp' ? 'on' : ''}">${tr('Explorer')}</button><button data-act="tab" data-v="git" class="${S.view === 'git' ? 'on' : ''}">${tr('Source Control')}</button></div>`;
     if (S.view === 'git') {
       const st = staged().length, can = st > 0 && S.input.trim();
       let inner;
-      if (S.ai === 'run') inner = '<span class="run"><span class="spin">✦</span> drafting from staged diff…</span>';
+      if (S.ai === 'run') inner = '<span class="run"><span class="spin">✦</span> ' + tr('drafting from staged diff…') + '</span>';
       else if (S.input) { const t = S.input.length > MAXC ? '…' + S.input.slice(-(MAXC - 1)) : S.input; inner = esc(t) + (S.focus === 'input' ? '<span class="caret"></span>' : ''); }
-      else inner = S.focus === 'input' ? '<span class="caret"></span>' : '<span class="ph">Message (⏎ to commit)</span>';
-      h += `<div class="cbox ${S.focus === 'input' ? 'focus' : ''}" data-act="input"><span class="txt">${inner}</span><button class="cbtn" data-act="ai" title="Draft with AI (Ctrl-G)">✦</button><button class="cbtn ${can ? 'ok' : 'dis'}" data-act="commit" title="Commit">✓</button></div>`;
+      else inner = S.focus === 'input' ? '<span class="caret"></span>' : '<span class="ph">' + tr('Message (⏎ to commit)') + '</span>';
+      h += `<div class="cbox ${S.focus === 'input' ? 'focus' : ''}" data-act="input"><span class="txt">${inner}</span><button class="cbtn" data-act="ai" title="${tr('Draft with AI (Ctrl-G)')}">✦</button><button class="cbtn ${can ? 'ok' : 'dis'}" data-act="commit" title="${tr('Commit')}">✓</button></div>`;
       const sec = (label, arr) => arr.length ? `<div class="sh"><span>${label}</span><span>${arr.length}</span></div>` + arr.map(x => `<div class="it ${x.key === sel ? 'sel' : ''}" data-act="sel" data-key="${x.key}"><span class="nm ${x.f.st}">${esc(x.f.name)}<em>${esc(x.f.dir)}</em></span><span class="${x.f.st}">${x.f.st}</span></div>`).join('') : '';
       const all = gitItems();
-      h += sec('STAGED CHANGES', all.filter(x => x.sec === 'staged')) + sec('CHANGES', all.filter(x => x.sec === 'changes'));
-      if (!all.some(x => x.sec !== 'history')) h += '<div class="none">✓ Working tree clean.<br>Press ↻ reset to replay.</div>';
-      h += `<div class="sh"><span>HISTORY</span></div>` + S.history.map(c => `<div class="it ${'h:' + c.hash === sel ? 'sel' : ''}" data-act="sel" data-key="h:${c.hash}"><span class="nm"><span class="M">${c.hash}</span> ${esc(c.msg)}</span><span class="dim">${c.when}</span></div>`).join('');
+      h += sec(tr('STAGED CHANGES'), all.filter(x => x.sec === 'staged')) + sec(tr('CHANGES'), all.filter(x => x.sec === 'changes'));
+      if (!all.some(x => x.sec !== 'history')) h += '<div class="none">' + tr('✓ Working tree clean.<br>Press ↻ reset to replay.') + '</div>';
+      h += `<div class="sh"><span>${tr('HISTORY')}</span></div>` + S.history.map(c => `<div class="it ${'h:' + c.hash === sel ? 'sel' : ''}" data-act="sel" data-key="h:${c.hash}"><span class="nm"><span class="M">${c.hash}</span> ${esc(c.msg)}</span><span class="dim">${c.when}</span></div>`).join('');
     } else {
       h += expItems().map(x => {
         const pad = 12 + x.depth * 14;
@@ -912,18 +1101,19 @@
     if (cur) { const t = cur.offsetTop, b = t + cur.offsetHeight; if (t < side.scrollTop + 60) side.scrollTop = Math.max(0, t - 60); else if (b > side.scrollTop + side.clientHeight - 4) side.scrollTop = b - side.clientHeight + 4; }
   }
 
+  const nChanges = n => lang === 'pt' ? `${n} mudança${n === 1 ? '' : 's'}` : `${n} change${n === 1 ? '' : 's'}`;
   function renderMainHead() {
-    let l = '<span>Nothing open</span>', r = '';
+    let l = '<span>' + tr('Nothing open') + '</span>', r = '';
     if (S.view === 'git') {
       const d = curDiff();
       if (d) {
         const hs = hunksOf(d.rows);
-        if (d.f) { l = `<span><b>${d.title}</b> <span class="${d.f.st}">${d.f.st}</span></span>`; r = (S.hunk >= 0 ? `change ${S.hunk + 1}/${hs.length}` : `${hs.length} change${hs.length === 1 ? '' : 's'}`) + (d.f.staged ? ' · <span class="A">staged</span>' : ''); }
-        else { l = `<span><b>${d.title}</b> · <span class="M">${S.diff.hash}</span> ${esc(d.c.msg)}</span>`; r = S.hunk >= 0 ? `change ${S.hunk + 1}/${hs.length}` : `${hs.length} change${hs.length === 1 ? '' : 's'}`; }
+        if (d.f) { l = `<span><b>${d.title}</b> <span class="${d.f.st}">${d.f.st}</span></span>`; r = (S.hunk >= 0 ? `${tr('change')} ${S.hunk + 1}/${hs.length}` : nChanges(hs.length)) + (d.f.staged ? ' · <span class="A">' + tr('staged') + '</span>' : ''); }
+        else { l = `<span><b>${d.title}</b> · <span class="M">${S.diff.hash}</span> ${esc(d.c.msg)}</span>`; r = S.hunk >= 0 ? `${tr('change')} ${S.hunk + 1}/${hs.length}` : nChanges(hs.length); }
       }
     } else if (S.file) {
       const st = fileSt(S.file.path);
-      l = `<span><b>${S.file.path}</b> ${st ? `<span class="${st}">${st}</span>` : ''}</span>`; r = FS[S.file.path].length + ' lines';
+      l = `<span><b>${S.file.path}</b> ${st ? `<span class="${st}">${st}</span>` : ''}</span>`; r = FS[S.file.path].length + tr(' lines');
     }
     mh.innerHTML = l + `<span class="r">${r}</span>`;
   }
@@ -941,11 +1131,11 @@
           const R = y != null ? `<div class="dc ${t === '=' ? '' : 'add'}"><b class="n">${++b}</b><span>${hl(y, d.lang)}</span></div>` : '<div class="dc ghost"><b class="n"></b></div>';
           return `<div class="dr">${L}${R}</div>`;
         }).join('') + '</div>';
-      } else h = `<div class="empty"><div>${logoSvg}<br>Select a file to see its diff</div></div>`;
+      } else h = `<div class="empty"><div>${logoSvg}<br>${tr('Select a file to see its diff')}</div></div>`;
     } else if (S.file) {
       const lang = langOf(S.file.path);
       h = '<div class="rows">' + FS[S.file.path].map((t, i) => `<div class="fr"><b class="n">${i + 1}</b><span>${hl(t, lang)}</span></div>`).join('') + '</div>';
-    } else h = `<div class="empty"><div>${logoSvg}<br>Open a file from the tree</div></div>`;
+    } else h = `<div class="empty"><div>${logoSvg}<br>${tr('Open a file from the tree')}</div></div>`;
     pane.innerHTML = h; pane.scrollTop = keep;
     const d = S.view === 'git' && curDiff(); if (d) markHunk(d.rows, hunksOf(d.rows));
   }
@@ -965,7 +1155,7 @@
   };
   function renderStatus() {
     const hs = S.focus === 'input' ? HINT.input : HINT[S.focus + '_' + S.view];
-    sbar.innerHTML = `<span class="br">⎇ main</span><span class="hints">${hs.map(([k, d, send]) => `<span class="hint" data-act="key" data-k="${send}"><kbd>${k}</kbd> ${d}</span>`).join('')}</span>${S.msg ? `<span class="msg ${S.msg.type}">${esc(S.msg.t)}</span>` : ''}`;
+    sbar.innerHTML = `<span class="br">⎇ main</span><span class="hints">${hs.map(([k, d, send]) => `<span class="hint" data-act="key" data-k="${send}"><kbd>${k}</kbd> ${tr(d)}</span>`).join('')}</span>${S.msg ? `<span class="msg ${S.msg.type}">${esc(S.msg.t)}</span>` : ''}`;
   }
   function renderFocus() {
     side.classList.toggle('focus', S.focus === 'list');
@@ -992,11 +1182,11 @@
     if (S.view !== 'git') return;
     const it = gitItems().find(x => x.key === S.sel.git);
     if (!it || !it.f) return;
-    it.f.staged = !it.f.staged; notify((it.f.staged ? 'Staged ' : 'Unstaged ') + it.f.name); paint(true);
+    it.f.staged = !it.f.staged; notify(tr(it.f.staged ? 'Staged ' : 'Unstaged ') + it.f.name); paint(true);
   }
   function stageAll() {
     if (S.view !== 'git') return;
-    S.files.forEach(f => f.staged = true); notify('Staged all changes'); paint(true);
+    S.files.forEach(f => f.staged = true); notify(tr('Staged all changes')); paint(true);
   }
   function jumpHunk(dir) {
     if (S.view !== 'git') return;
@@ -1004,7 +1194,7 @@
     const hs = hunksOf(d.rows); if (!hs.length) return;
     let i = S.hunk + dir;
     if (S.hunk < 0 && dir < 0) i = hs.length - 1;
-    if (i >= hs.length) { i = 0; notify('Back to the first change'); }
+    if (i >= hs.length) { i = 0; notify(tr('Back to the first change')); }
     if (i < 0) i = hs.length - 1;
     S.hunk = i; markHunk(d.rows, hs); renderMainHead();
     const row = $('.rows', pane).children[hs[i]];
@@ -1017,22 +1207,22 @@
   function setFocus(f) { S.focus = f; paint(); }
   function aiMessage() { const names = staged().map(f => f.path).join(' '); return (AI_MSG.find(([re]) => re.test(names)) || [0, 'chore: update files'])[1]; }
   async function generate() {
-    if (!staged().length) { notify('Nothing staged — stage a file first (space)', 'err'); paint(); return; }
+    if (!staged().length) { notify(tr('Nothing staged — stage a file first (space)'), 'err'); paint(); return; }
     if (S.ai) return;
     const tok = ++aiTok; S.ai = 'run'; S.input = ''; S.focus = 'input'; paint();
     await sleep(1300); if (tok !== aiTok) return;
     S.ai = null; const msg = aiMessage();
     for (const ch of msg) { S.input += ch; renderSide(); await sleep(24); if (tok !== aiTok) return; }
-    notify('✦ Draft ready — review it, then ⏎ to commit', 'ok'); paint();
+    notify(tr('✦ Draft ready — review it, then ⏎ to commit'), 'ok'); paint();
   }
   function commit() {
     const st = staged();
-    if (!st.length) { notify('Nothing staged', 'err'); paint(); return; }
-    if (!S.input.trim()) { notify('Write a message first — or press ^G for a draft', 'err'); paint(); return; }
+    if (!st.length) { notify(tr('Nothing staged'), 'err'); paint(); return; }
+    if (!S.input.trim()) { notify(tr('Write a message first — or press ^G for a draft'), 'err'); paint(); return; }
     const hash = Array.from({ length: 7 }, () => '0123456789abcdef'[Math.random() * 16 | 0]).join('');
     S.history.unshift({ hash, msg: S.input.trim(), when: 'now', files: st.map(f => ({ path: f.path, rows: f.rows })) });
     S.files = S.files.filter(f => !f.staged);
-    S.input = ''; S.focus = 'list'; S.sel.git = 'h:' + hash; showSel(); notify('✓ Committed ' + hash, 'ok'); paint(true);
+    S.input = ''; S.focus = 'list'; S.sel.git = 'h:' + hash; showSel(); notify(tr('✓ Committed ') + hash, 'ok'); paint(true);
   }
 
   const ECHO = { ' ': 'space', Enter: '⏎', Escape: 'esc', ArrowDown: '↓', ArrowUp: '↑', ArrowLeft: '←', ArrowRight: '→', Backspace: '⌫', 'ctrl+g': '^G', PageDown: 'PgDn', PageUp: 'PgUp' };
@@ -1046,7 +1236,7 @@
     echo(k); clearTimeout(msgT); S.msg = null;
     if (k === 'ctrl+g') { generate(); return true; }
     if (S.focus === 'input') {
-      if (S.ai === 'run') { if (k === 'Escape') { aiTok++; S.ai = null; notify('Cancelled'); paint(); } return true; }
+      if (S.ai === 'run') { if (k === 'Escape') { aiTok++; S.ai = null; notify(tr('Cancelled')); paint(); } return true; }
       if (k === 'Escape') { setFocus('list'); return true; }
       if (k === 'Enter') { commit(); return true; }
       if (k === 'Backspace') { S.input = S.input.slice(0, -1); paint(); return true; }
@@ -1060,8 +1250,8 @@
       case '2': S.focus = 'main'; paint(); return true;
       case '3': S.view = 'git'; if (S.history[0]) S.sel.git = 'h:' + S.history[0].hash; showSel(); S.focus = 'list'; paint(true); return true;
       case 'b': S.side = !S.side; screen.classList.toggle('nosb', !S.side); if (!S.side) S.focus = 'main'; paint(); return true;
-      case 'q': notify('q quits auri — this demo keeps going ✦'); paint(); return true;
-      case 'r': notify('Refreshed'); paint(); return true;
+      case 'q': notify(tr('q quits auri — this demo keeps going ✦')); paint(); return true;
+      case 'r': notify(tr('Refreshed')); paint(); return true;
       case 'n': jumpHunk(1); return true;
       case 'N': jumpHunk(-1); return true;
     }
@@ -1130,10 +1320,11 @@
 
   function setCap() {
     capEl.innerHTML = auto
-      ? '<span class="live"></span>Live demo — click the terminal to take over'
-      : reduce && !S.touched ? 'Click the terminal, then press <kbd>j</kbd><kbd>k</kbd> to move, <kbd>space</kbd> to stage, <kbd>n</kbd> for the next change, <kbd>c</kbd> to commit'
-      : 'Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ draft';
+      ? '<span class="live"></span>' + tr('Live demo — click the terminal to take over')
+      : reduce && !S.touched ? tr('Click the terminal, then press <kbd>j</kbd><kbd>k</kbd> to move, <kbd>space</kbd> to stage, <kbd>n</kbd> for the next change, <kbd>c</kbd> to commit')
+      : tr('Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ draft');
   }
+  langHooks.push(() => { paint(true); setCap(); });
 
   /* — autoplay: the same key handler a visitor would use — */
   const SCRIPT = [
@@ -1169,7 +1360,8 @@
     const OLDL = [['', '/// Distance in parsecs.'], ['del', 'pub fn distance(p: f64) -> f64 {'], ['del', '    1.0 / p'], ['', '}']];
     const NEWL = [['', '/// Distance in parsecs.'], ['add', 'pub fn distance(px: f64) -> Option<f64> {'], ['add', '    (px > 0.0).then(|| 1.0 / px)'], ['', '}']];
     const pane = (L, tag, sub) => `<div class="pn-h"><span>${tag}</span><span>${sub}</span></div><div style="padding:6px 0">` + L.map(([c, t], i) => `<div class="pl ${c}"><b class="n" style="width:30px">${i + 3}</b><span>${hl(t)}</span></div>`).join('') + '</div>';
-    pO.innerHTML = pane(OLDL, 'A · HEAD', 'before'); pN.innerHTML = pane(NEWL, 'B · Working tree', 'after');
+    const buildPanes = () => { pO.innerHTML = pane(OLDL, 'A · HEAD', tr('before')); pN.innerHTML = pane(NEWL, 'B · ' + tr('Working tree'), tr('after')); };
+    buildPanes(); langHooks.push(buildPanes);
     let ticking = false, last = -1;
     function update() {
       ticking = false;
@@ -1207,12 +1399,12 @@
   // stage / unstage
   (async () => {
     const box = track($('#vzStage')), rows = $$('.sr', box), key = $('#spaceKey'); let i = 0;
-    if (reduce) { rows[0].classList.add('staged'); $('.tag', rows[0]).textContent = 'staged'; return; }
+    if (reduce) { rows[0].classList.add('staged'); $('.tag', rows[0]).textContent = tr('staged'); return; }
     for (;;) {
       await whenSeen(box); await sleep(1300);
       const r = rows[i++ % rows.length], on = !r.classList.contains('staged');
       key.style.cssText = 'background:var(--gold);color:#1a1406;border-color:var(--gold)'; setTimeout(() => key.style.cssText = '', 180);
-      r.classList.toggle('staged', on); $('.tag', r).textContent = on ? 'staged ✓' : (r.textContent.includes('old.rs') ? 'D' : 'M');
+      r.classList.toggle('staged', on); $('.tag', r).textContent = on ? tr('staged') + ' ✓' : (r.textContent.includes('old.rs') ? 'D' : 'M');
     }
   })();
 
@@ -1221,7 +1413,8 @@
     const box = track($('#vzLive'));
     const EV = [['M', 'src/orbit.rs', 'M'], ['A', 'tests/parallax.rs', 'A'], ['M', 'src/star.rs', 'M'], ['D', 'legacy/old.rs', 'D'], ['M', 'Cargo.toml', 'M']];
     const line = ([c, f, k]) => `<div class="row ev"><span class="${c}">${f}</span><span class="${k}">${k}</span></div>`;
-    box.innerHTML = '<div class="row dim"><span>● watching…</span><span>↻ 2s</span></div>' + line(EV[0]) + line(EV[1]);
+    box.innerHTML = '<div class="row dim"><span id="liveHd">' + tr('● watching…') + '</span><span>↻ 2s</span></div>' + line(EV[0]) + line(EV[1]);
+    langHooks.push(() => { const h = $('#liveHd'); if (h) h.textContent = tr('● watching…'); });
     if (reduce) return;
     let i = 2;
     for (;;) {
@@ -1237,7 +1430,7 @@
     const M = ['feat(orbit): distance() returns Option', 'fix(star): guard against zero parallax', 'refactor: rename mag to magnitude'];
     if (reduce) { typed.textContent = M[0]; return; }
     for (let i = 0; ; i++) {
-      await whenSeen(box); typed.textContent = ''; typed.style.color = 'var(--gold)'; typed.textContent = 'drafting from staged diff…'; spin.classList.add('spin'); spin.style.display = 'inline-block';
+      await whenSeen(box); typed.textContent = ''; typed.style.color = 'var(--gold)'; typed.textContent = tr('drafting from staged diff…'); spin.classList.add('spin'); spin.style.display = 'inline-block';
       await sleep(1300); spin.classList.remove('spin'); typed.style.color = ''; typed.textContent = '';
       for (const ch of M[i % M.length]) { typed.textContent += ch; await sleep(30); }
       await sleep(2800);
@@ -1299,8 +1492,8 @@
     if (k.length > 12) return;
     $$('.cap-k').filter(c => c.dataset.k === k).forEach(c => { c.classList.add('pressed'); setTimeout(() => c.classList.remove('pressed'), 160); });
   });
+  applyLang(lang);
 })();
-
 </script>
 </body>
 </html>
