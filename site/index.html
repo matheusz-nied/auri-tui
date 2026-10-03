@@ -841,14 +841,14 @@
  "Nothing staged — stage a file first (space)": "Nada em stage — faça stage de um arquivo primeiro (space)",
  "✦ Draft ready — review it, then ⏎ to commit": "✦ Rascunho pronto — revise e aperte ⏎ para commitar",
  "Nothing staged": "Nada em stage",
- "Write a message first — or press ^G for a draft": "Escreva uma mensagem antes — ou aperte ^G para um rascunho",
+ "Write a message first — or press Ctrl-G for a draft": "Escreva uma mensagem antes — ou aperte Ctrl-G para um rascunho",
  "✓ Committed ": "✓ Commit feito ",
  "Cancelled": "Cancelado",
  "q quits auri — this demo keeps going ✦": "q fecha o auri — este demo continua ✦",
  "Refreshed": "Atualizado",
  "Live demo — click the terminal to take over": "Demo ao vivo — clique no terminal para assumir o controle",
  "Click the terminal, then press <kbd>j</kbd><kbd>k</kbd> to move, <kbd>space</kbd> to stage, <kbd>n</kbd> for the next change, <kbd>c</kbd> to commit": "Clique no terminal e aperte <kbd>j</kbd><kbd>k</kbd> para mover, <kbd>space</kbd> para stage, <kbd>n</kbd> para a próxima mudança, <kbd>c</kbd> para commitar",
- "Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ draft": "Sua vez — <kbd>j</kbd><kbd>k</kbd> mover · <kbd>space</kbd> stage · <kbd>n</kbd> próxima mudança · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ rascunho",
+ "Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>Ctrl-G</kbd> ✦ draft": "Sua vez — <kbd>j</kbd><kbd>k</kbd> mover · <kbd>space</kbd> stage · <kbd>n</kbd> próxima mudança · <kbd>c</kbd> commit · <kbd>Ctrl-G</kbd> ✦ rascunho",
  "before": "antes",
  "after": "depois",
  "Working tree": "Árvore de trabalho",
@@ -1147,10 +1147,10 @@
   }
 
   const HINT = {
-    input: [['⏎', 'commit', 'Enter'], ['^G', '✦ draft', 'ctrl+g'], ['esc', 'back', 'Escape']],
+    input: [['⏎', 'commit', 'Enter'], ['Ctrl-G', '✦ draft', 'ctrl+g'], ['esc', 'back', 'Escape']],
     main_git: [['j k', 'scroll', 'j'], ['n N', 'next change', 'n'], ['1', 'list', '1'], ['e', 'explorer', 'e']],
     main_exp: [['j k', 'scroll', 'j'], ['1', 'tree', '1'], ['c', 'commit', 'c']],
-    list_git: [['j k', 'move', 'j'], ['space', 'stage', ' '], ['n', 'next change', 'n'], ['c', 'commit', 'c'], ['^G', '✦', 'ctrl+g']],
+    list_git: [['j k', 'move', 'j'], ['space', 'stage', ' '], ['n', 'next change', 'n'], ['c', 'commit', 'c'], ['Ctrl-G', '✦', 'ctrl+g']],
     list_exp: [['j k', 'move', 'j'], ['l h', 'expand', 'l'], ['⏎', 'open', 'Enter'], ['c', 'git', 'c']]
   };
   function renderStatus() {
@@ -1218,14 +1218,14 @@
   function commit() {
     const st = staged();
     if (!st.length) { notify(tr('Nothing staged'), 'err'); paint(); return; }
-    if (!S.input.trim()) { notify(tr('Write a message first — or press ^G for a draft'), 'err'); paint(); return; }
+    if (!S.input.trim()) { notify(tr('Write a message first — or press Ctrl-G for a draft'), 'err'); paint(); return; }
     const hash = Array.from({ length: 7 }, () => '0123456789abcdef'[Math.random() * 16 | 0]).join('');
     S.history.unshift({ hash, msg: S.input.trim(), when: 'now', files: st.map(f => ({ path: f.path, rows: f.rows })) });
     S.files = S.files.filter(f => !f.staged);
     S.input = ''; S.focus = 'list'; S.sel.git = 'h:' + hash; showSel(); notify(tr('✓ Committed ') + hash, 'ok'); paint(true);
   }
 
-  const ECHO = { ' ': 'space', Enter: '⏎', Escape: 'esc', ArrowDown: '↓', ArrowUp: '↑', ArrowLeft: '←', ArrowRight: '→', Backspace: '⌫', 'ctrl+g': '^G', PageDown: 'PgDn', PageUp: 'PgUp' };
+  const ECHO = { ' ': 'space', Enter: '⏎', Escape: 'esc', ArrowDown: '↓', ArrowUp: '↑', ArrowLeft: '←', ArrowRight: '→', Backspace: '⌫', 'ctrl+g': 'Ctrl-G', PageDown: 'PgDn', PageUp: 'PgUp' };
   function echo(k) {
     if (S.focus === 'input' && k.length === 1) return;
     const el = document.createElement('kbd'); el.textContent = ECHO[k] || k; echoBox.appendChild(el);
@@ -1322,7 +1322,7 @@
     capEl.innerHTML = auto
       ? '<span class="live"></span>' + tr('Live demo — click the terminal to take over')
       : reduce && !S.touched ? tr('Click the terminal, then press <kbd>j</kbd><kbd>k</kbd> to move, <kbd>space</kbd> to stage, <kbd>n</kbd> for the next change, <kbd>c</kbd> to commit')
-      : tr('Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>^G</kbd> ✦ draft');
+      : tr('Your turn — <kbd>j</kbd><kbd>k</kbd> move · <kbd>space</kbd> stage · <kbd>n</kbd> next change · <kbd>c</kbd> commit · <kbd>Ctrl-G</kbd> ✦ draft');
   }
   langHooks.push(() => { paint(true); setCap(); });
 

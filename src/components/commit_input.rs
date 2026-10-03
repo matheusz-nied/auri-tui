@@ -183,7 +183,7 @@ impl Component for CommitInput {
         }
         match key.code {
             KeyCode::Char('a') if ctrl => return Some(Action::ToggleAmend),
-            // Other Ctrl-chars are commands (^g/^t AI, ^c quit) — never text.
+            // Other Ctrl-chars are commands (ctrl-g/ctrl-t AI, ctrl-c quit) — never text.
             KeyCode::Char(c) if !ctrl => self.insert(c),
             KeyCode::Char(_) => {}
             KeyCode::Backspace => {
@@ -258,7 +258,7 @@ impl Component for CommitInput {
     }
 
     fn hints(&self) -> &'static str {
-        "enter commit · ^j newline · ^a amend"
+        "enter commit · ctrl-j newline · ctrl-a amend"
     }
 
     fn preferred_height(&self) -> Option<u16> {

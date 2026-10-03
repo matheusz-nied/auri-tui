@@ -114,7 +114,7 @@ use Scope::{Anywhere, Global, Navigation, Typing};
 /// match, so state-dependent ones (`CancelAi`) come before the fallback
 /// meaning of the same key.
 pub const GLOBAL: &[Binding] = &[
-    ctrl('c', C::Quit, Anywhere, "^c", "quit", None),
+    ctrl('c', C::Quit, Anywhere, "ctrl-c", "quit", None),
     bind(Char('q'), C::Quit, Navigation, "q", "quit", Some("q quit")),
     bind(
         Char('?'),
@@ -225,15 +225,15 @@ pub const GLOBAL: &[Binding] = &[
         'g',
         C::GenerateCommitMessage,
         Global,
-        "^g",
+        "ctrl-g",
         "AI commit message",
-        Some("^g AI"),
+        Some("ctrl-g AI"),
     ),
     ctrl(
         't',
         C::ToggleAiProvider,
         Global,
-        "^t",
+        "ctrl-t",
         "switch AI provider (codex/opencode)",
         None,
     ),
@@ -393,9 +393,9 @@ mod tests {
     fn status_hints_follow_the_context() {
         assert_eq!(
             status_hints(nav()),
-            "q quit · ? help · tab focus · e files · c git · b sidebar · [/] resize · ^g AI"
+            "q quit · ? help · tab focus · e files · c git · b sidebar · [/] resize · ctrl-g AI"
         );
-        assert_eq!(status_hints(typing()), "tab focus · esc back · ^g AI");
+        assert_eq!(status_hints(typing()), "tab focus · esc back · ctrl-g AI");
     }
 
     #[test]
