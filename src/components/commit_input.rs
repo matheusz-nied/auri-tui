@@ -10,22 +10,23 @@ use ratatui::Frame;
 use crate::action::Action;
 use crate::component::Component;
 use crate::text;
+use crate::theme;
 
 use super::border_style;
 use super::hitbox::Hitboxes;
 
-/// AI button background (idle / generating).
-const AI_BG: Color = Color::Rgb(110, 60, 170);
-const AI_STOP_BG: Color = Color::Rgb(160, 50, 70);
+/// AI button (idle / generating): a gold glyph on a keycap, rose to stop.
+const AI_BG: Color = theme::PANEL;
+const AI_STOP_BG: Color = theme::DEL_BG;
 /// Commit button background, and its color while amending — a warning:
-/// amend rewrites the last commit.
-const COMMIT_BG: Color = Color::Rgb(0, 95, 160);
-const AMEND_BG: Color = Color::Rgb(170, 95, 20);
+/// amend rewrites the last commit, so it turns rose.
+const COMMIT_BG: Color = theme::GOLD;
+const AMEND_BG: Color = theme::DEL_FG;
 /// Disabled commit button.
-const DISABLED_FG: Color = Color::Rgb(110, 120, 130);
-const DISABLED_BG: Color = Color::Rgb(40, 48, 58);
+const DISABLED_FG: Color = theme::FAINT;
+const DISABLED_BG: Color = theme::PANEL;
 /// Amend toggle while off.
-const TOGGLE_OFF_BG: Color = Color::Rgb(55, 62, 72);
+const TOGGLE_OFF_BG: Color = theme::PANEL;
 /// Amend toggle label, right of the commit button.
 const AMEND_LABEL: &str = " amend ";
 /// Text columns to keep before the AI button shrinks to just its glyph.
@@ -273,7 +274,8 @@ impl Component for CommitInput {
 
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(border_style(focused));
+            .border_style(border_style(focused))
+            .style(Style::default().bg(theme::BG_INPUT));
         let inner = block.inner(input);
         f.render_widget(block, input);
 
@@ -285,6 +287,11 @@ impl Component for CommitInput {
             ("■", "Stop", Action::CancelCommitMessage, AI_STOP_BG)
         } else {
             ("✦", "AI", Action::GenerateCommitMessage, AI_BG)
+        };
+        let ai_fg = if self.generating.is_some() {
+            theme::DEL_FG
+        } else {
+            theme::GOLD
         };
         let full = format!(" {glyph} {word} ");
         let full_w = full.chars().count() as u16;
@@ -326,10 +333,7 @@ impl Component for CommitInput {
                     format!("Message (Enter to commit on \"{}\")", self.branch)
                 }
             };
-            let line = Line::from(Span::styled(
-                placeholder,
-                Style::default().fg(Color::DarkGray),
-            ));
+            let line = Line::from(Span::styled(placeholder, theme::faint()));
             let rect = Rect::new(inner.x, inner.y, text_w, inner.height.min(1));
             f.render_widget(Paragraph::new(line), rect);
         } else {
@@ -347,7 +351,7 @@ impl Component for CommitInput {
         }
 
         let style = Style::default()
-            .fg(Color::White)
+            .fg(ai_fg)
             .bg(bg)
             .add_modifier(Modifier::BOLD);
         f.render_widget(Span::styled(label, style), ai_rect);
@@ -373,8 +377,14 @@ impl Component for CommitInput {
         let left = commit_row.width.saturating_sub(label_w) / 2;
         let right = commit_row.width.saturating_sub(left + label_w);
         let style = match (enabled, self.amend) {
-            (true, false) => Style::default().fg(Color::White).bg(COMMIT_BG),
-            (true, true) => Style::default().fg(Color::White).bg(AMEND_BG),
+            (true, false) => Style::default()
+                .fg(theme::ON_GOLD)
+                .bg(COMMIT_BG)
+                .add_modifier(Modifier::BOLD),
+            (true, true) => Style::default()
+                .fg(theme::ON_GOLD)
+                .bg(AMEND_BG)
+                .add_modifier(Modifier::BOLD),
             (false, _) => Style::default().fg(DISABLED_FG).bg(DISABLED_BG),
         };
         let bar = format!(
@@ -391,7 +401,7 @@ impl Component for CommitInput {
             let rect = Rect::new(commit_row.x + commit_row.width, button_row.y, toggle_w, 1);
             let style = if self.amend {
                 Style::default()
-                    .fg(Color::White)
+                    .fg(theme::ON_GOLD)
                     .bg(AMEND_BG)
                     .add_modifier(Modifier::BOLD)
             } else {

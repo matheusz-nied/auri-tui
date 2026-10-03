@@ -1,12 +1,13 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::action::Action;
 use crate::component::Component;
+use crate::theme;
 
 use super::hitbox::Hitboxes;
 
@@ -110,7 +111,9 @@ impl Component for ConfirmDialog {
         self.dialog = dialog;
 
         f.render_widget(Clear, dialog);
-        let block = Block::bordered().border_style(Style::default().fg(Color::Cyan));
+        let block = Block::bordered()
+            .border_style(theme::border(true))
+            .style(theme::base());
         let inner = block.inner(dialog);
         f.render_widget(block, dialog);
         f.render_widget(
@@ -132,20 +135,20 @@ impl Component for ConfirmDialog {
         self.confirm_rect = confirm_rect;
 
         let cancel_style = if self.confirm_selected {
-            Style::default().fg(Color::White)
+            theme::muted()
         } else {
             Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(70, 70, 90))
+                .fg(theme::INK)
+                .bg(theme::LINE_2)
                 .add_modifier(Modifier::BOLD)
         };
         let discard_style = if self.confirm_selected {
             Style::default()
-                .fg(Color::White)
-                .bg(Color::Rgb(170, 40, 40))
+                .fg(theme::ON_GOLD)
+                .bg(theme::DEL_FG)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White).bg(Color::Rgb(90, 25, 25))
+            Style::default().fg(theme::DEL_FG).bg(theme::DEL_BG)
         };
         f.render_widget(Span::styled(cancel, cancel_style), cancel_rect);
         f.render_widget(Span::styled(confirm, discard_style), confirm_rect);

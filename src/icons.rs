@@ -9,6 +9,8 @@
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
+use crate::theme;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IconStyle {
@@ -24,7 +26,7 @@ pub struct Icon {
     pub color: Color,
 }
 
-const FOLDER: Color = Color::Rgb(220, 180, 90);
+const FOLDER: Color = theme::GOLD;
 
 pub fn dir_icon(style: IconStyle, expanded: bool) -> Icon {
     let glyph = match (style, expanded) {
@@ -126,32 +128,32 @@ impl FileKind {
     /// (text badge, Nerd Font glyph, color).
     fn spec(self) -> (&'static str, &'static str, Color) {
         match self {
-            Self::Rust => ("rs", "\u{e7a8} ", Color::Rgb(222, 120, 70)),
-            Self::TypeScript => ("ts", "\u{e628} ", Color::Rgb(49, 140, 220)),
-            Self::JavaScript => ("js", "\u{e74e} ", Color::Rgb(241, 224, 90)),
-            Self::Python => ("py", "\u{e73c} ", Color::Rgb(80, 150, 210)),
-            Self::Go => ("go", "\u{e627} ", Color::Rgb(0, 173, 216)),
-            Self::Ruby => ("rb", "\u{e739} ", Color::Rgb(204, 52, 45)),
-            Self::Java => ("jv", "\u{e738} ", Color::Rgb(200, 130, 40)),
-            Self::C => ("c ", "\u{e61e} ", Color::Rgb(90, 140, 220)),
-            Self::Cpp => ("c+", "\u{e61d} ", Color::Rgb(90, 140, 220)),
-            Self::Lua => ("lu", "\u{e620} ", Color::Rgb(80, 110, 220)),
-            Self::Shell => ("$ ", "\u{e795} ", Color::Rgb(137, 224, 81)),
-            Self::Html => ("<>", "\u{e736} ", Color::Rgb(227, 76, 38)),
-            Self::Css => ("# ", "\u{e749} ", Color::Rgb(66, 165, 245)),
-            Self::Json => ("{}", "\u{e60b} ", Color::Rgb(203, 203, 65)),
-            Self::Toml => ("tm", "\u{e615} ", Color::Rgb(160, 160, 170)),
-            Self::Yaml => ("ym", "\u{e615} ", Color::Rgb(200, 80, 80)),
-            Self::Markdown => ("M↓", "\u{e73e} ", Color::Rgb(81, 154, 210)),
-            Self::Text => ("≡ ", "\u{f0f6} ", Color::Rgb(150, 150, 160)),
-            Self::Sql => ("db", "\u{e706} ", Color::Rgb(220, 170, 90)),
-            Self::Image => ("▣ ", "\u{f1c5} ", Color::Rgb(170, 110, 210)),
-            Self::Lock => ("lk", "\u{f023} ", Color::Rgb(130, 130, 140)),
-            Self::Git => ("◆ ", "\u{e702} ", Color::Rgb(240, 80, 50)),
-            Self::Docker => ("dk", "\u{e7b0} ", Color::Rgb(40, 150, 237)),
-            Self::Make => ("mk", "\u{e615} ", Color::Rgb(160, 160, 170)),
-            Self::License => ("© ", "\u{f0f6} ", Color::Rgb(210, 180, 80)),
-            Self::Other => ("··", "\u{f016} ", Color::Rgb(130, 130, 140)),
+            Self::Rust => ("rs", "\u{e7a8} ", Color::Rgb(181, 154, 122)),
+            Self::TypeScript => ("ts", "\u{e628} ", Color::Rgb(143, 167, 196)),
+            Self::JavaScript => ("js", "\u{e74e} ", Color::Rgb(201, 180, 114)),
+            Self::Python => ("py", "\u{e73c} ", Color::Rgb(150, 170, 150)),
+            Self::Go => ("go", "\u{e627} ", Color::Rgb(140, 180, 190)),
+            Self::Ruby => ("rb", "\u{e739} ", Color::Rgb(190, 120, 115)),
+            Self::Java => ("jv", "\u{e738} ", Color::Rgb(196, 150, 100)),
+            Self::C => ("c ", "\u{e61e} ", Color::Rgb(150, 165, 190)),
+            Self::Cpp => ("c+", "\u{e61d} ", Color::Rgb(150, 165, 190)),
+            Self::Lua => ("lu", "\u{e620} ", Color::Rgb(140, 150, 190)),
+            Self::Shell => ("$ ", "\u{e795} ", Color::Rgb(163, 179, 148)),
+            Self::Html => ("<>", "\u{e736} ", Color::Rgb(201, 130, 105)),
+            Self::Css => ("# ", "\u{e749} ", Color::Rgb(150, 175, 205)),
+            Self::Json => ("{}", "\u{e60b} ", Color::Rgb(190, 175, 120)),
+            Self::Toml => ("tm", "\u{e615} ", Color::Rgb(138, 133, 120)),
+            Self::Yaml => ("ym", "\u{e615} ", Color::Rgb(190, 120, 115)),
+            Self::Markdown => ("M↓", "\u{e73e} ", Color::Rgb(154, 167, 184)),
+            Self::Text => ("≡ ", "\u{f0f6} ", Color::Rgb(141, 136, 125)),
+            Self::Sql => ("db", "\u{e706} ", Color::Rgb(196, 160, 100)),
+            Self::Image => ("▣ ", "\u{f1c5} ", Color::Rgb(170, 150, 190)),
+            Self::Lock => ("lk", "\u{f023} ", Color::Rgb(110, 106, 98)),
+            Self::Git => ("◆ ", "\u{e702} ", Color::Rgb(201, 125, 100)),
+            Self::Docker => ("dk", "\u{e7b0} ", Color::Rgb(130, 165, 200)),
+            Self::Make => ("mk", "\u{e615} ", Color::Rgb(138, 133, 120)),
+            Self::License => ("© ", "\u{f0f6} ", Color::Rgb(214, 162, 74)),
+            Self::Other => ("··", "\u{f016} ", Color::Rgb(110, 106, 98)),
         }
     }
 }

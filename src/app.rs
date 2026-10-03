@@ -6,9 +6,9 @@ use anyhow::Result;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame, Terminal};
 
 use crate::action::{Action, PanelId};
@@ -32,6 +32,7 @@ use crate::git_worker::{self, Done, GitJob, GitJobs, GitResult};
 use crate::keymap::{self, Command, HelpSection};
 use crate::layout::{self, Sidebar, SidebarView};
 use crate::prefs::{Preferences, PrefsStore};
+use crate::theme;
 use crate::watch::{RepoWatcher, WatchEvent};
 
 /// The file shown by `FileView`; `stamp` is its state when last read,
@@ -1102,6 +1103,8 @@ impl App {
     fn render(&mut self, f: &mut Frame) {
         let area = f.area();
         self.frame_area = area;
+        // Paint the page first: every unstyled cell below inherits it.
+        f.render_widget(Block::default().style(theme::base()), area);
         let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
         self.main_area = vertical[0];
         self.status_bar = vertical[1];
@@ -1147,7 +1150,7 @@ impl App {
                 for col in [a, b] {
                     for row in self.main_area.y..self.main_area.y + self.main_area.height {
                         if let Some(cell) = f.buffer_mut().cell_mut((col, row)) {
-                            cell.set_fg(Color::Cyan);
+                            cell.set_fg(theme::GOLD);
                         }
                     }
                 }
@@ -1155,7 +1158,7 @@ impl App {
             if let (Some(row), Some(panel)) = (pr.split_row, pr.changes) {
                 for col in panel.x..panel.x + panel.width {
                     if let Some(cell) = f.buffer_mut().cell_mut((col, row)) {
-                        cell.set_fg(Color::Cyan);
+                        cell.set_fg(theme::GOLD);
                     }
                 }
             }
@@ -1189,19 +1192,46 @@ impl App {
             format!("{global} · {panel_hints}")
         };
         let mut spans = vec![
-            Span::styled(format!(" {branch}"), Style::default().fg(Color::Cyan)),
-            Span::styled(format!("  {keys}"), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" ⎇ {branch}"), theme::accent()),
+            Span::raw("  "),
         ];
+        spans.extend(hint_spans(&keys));
         if let Some((msg, is_error)) = &self.message {
-            let style = if *is_error {
-                Style::default().fg(Color::Red)
+            let color = if *is_error {
+                theme::DEL_FG
             } else {
-                Style::default().fg(Color::Green)
+                theme::ADD_FG
             };
-            spans.push(Span::styled(format!("  {msg}"), style));
+            spans.push(Span::styled(format!("  {msg}"), Style::default().fg(color)));
         }
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::BG_BAR)),
+            area,
+        );
     }
+}
+
+/// A hints string ("q quit · ? help") as styled spans with the same text:
+/// each chunk's first word is the key, drawn as a keycap, the rest muted.
+fn hint_spans(hints: &str) -> Vec<Span<'static>> {
+    let key = Style::default()
+        .fg(theme::INK)
+        .bg(theme::PANEL)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    for (i, chunk) in hints.split(" · ").filter(|c| !c.is_empty()).enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", theme::faint()));
+        }
+        match chunk.split_once(' ') {
+            Some((k, desc)) => {
+                spans.push(Span::styled(k.to_string(), key));
+                spans.push(Span::styled(format!(" {desc}"), theme::muted()));
+            }
+            None => spans.push(Span::styled(chunk.to_string(), key)),
+        }
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -2253,6 +2283,36 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         app.dispatch();
         assert!(!app.running);
+    }
+
+    #[test]
+    fn every_cell_is_painted_with_the_theme() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+        let (mut app, _fs) = explorer_app(MemoryStore::new(None));
+        app.dispatch();
+        // Explorer, then Source Control with the help overlay (which clears
+        // its area) on top: no cell may fall back to the terminal's colors.
+        for help in [false, true] {
+            if help {
+                app.on_key(KeyEvent::from(KeyCode::Char('c')));
+                app.dispatch();
+                app.on_key(KeyEvent::from(KeyCode::Esc));
+                app.on_key(KeyEvent::from(KeyCode::Char('?')));
+                app.dispatch();
+            }
+            let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            term.draw(|f| app.render(f)).unwrap();
+            let buf = term.backend().buffer();
+            for y in 0..30 {
+                for x in 0..120 {
+                    let cell = &buf[(x, y)];
+                    assert_ne!(cell.bg, Color::Reset, "bg at ({x},{y}) help={help}");
+                    assert_ne!(cell.fg, Color::Reset, "fg at ({x},{y}) help={help}");
+                }
+            }
+        }
     }
 
     #[test]

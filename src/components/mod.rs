@@ -9,21 +9,18 @@ pub mod history;
 pub mod hitbox;
 pub mod view_tabs;
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::action::Action;
 use crate::text;
+use crate::theme;
 
 use hitbox::button_span;
 
 /// Border style used to show which panel owns keyboard focus.
 pub fn border_style(focused: bool) -> Style {
-    if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    }
+    theme::border(focused)
 }
 
 /// Lines scrolled per mouse-wheel event. Trackpads emit one event per small
@@ -32,31 +29,55 @@ pub const SCROLL_LINES: usize = 1;
 
 /// Selection highlight used by list-like components.
 pub fn selection_style(focused: bool) -> Style {
-    if focused {
-        Style::default().bg(Color::Rgb(40, 45, 65))
-    } else {
-        Style::default().bg(Color::Rgb(30, 30, 40))
-    }
+    theme::selection(focused)
+}
+
+/// Mark the selected row of a focused list with a gold bar in its first
+/// column (the landing page's `inset 2px 0 0 gold`). Every row starts with a
+/// spacer column, so nothing is overwritten; a row that doesn't is left as is.
+pub fn selection_bar(line: Line<'static>) -> Line<'static> {
+    let mut spans = line.spans;
+    let Some(first) = spans.first() else {
+        return Line::from(spans);
+    };
+    let Some(rest) = first.content.strip_prefix(' ') else {
+        return Line::from(spans);
+    };
+    let style = first.style;
+    let rest = rest.to_string();
+    spans[0] = Span::styled(rest, style);
+    spans.insert(0, Span::styled("▌", style.fg(theme::GOLD)));
+    Line::from(spans)
 }
 
 /// One-letter status color for file rows (Changes and History).
 pub fn code_color(code: char) -> Color {
     match code {
-        'M' => Color::Yellow,
-        'A' | 'U' => Color::Green,
-        'D' => Color::Red,
-        '!' => Color::LightRed,
-        'R' | 'C' => Color::Blue,
-        _ => Color::White,
+        'M' => theme::GOLD,
+        'A' | 'U' => theme::ADD_FG,
+        'D' | '!' => theme::DEL_FG,
+        'R' | 'C' => theme::COOL,
+        _ => theme::INK,
     }
 }
 
 fn button_color(glyph: &str) -> Color {
     match glyph {
-        "+" => Color::Green,
-        "−" => Color::Blue,
-        "↶" => Color::Red,
-        _ => Color::White,
+        "+" => theme::ADD_FG,
+        "−" => theme::COOL,
+        "↶" => theme::DEL_FG,
+        _ => theme::INK,
+    }
+}
+
+/// Status letter style: conflicts (`!`) are told apart from deletions by
+/// weight, since they share the rose color.
+fn code_style(style: Style, code: char) -> Style {
+    let style = style.fg(code_color(code));
+    if code == '!' {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
     }
 }
 
@@ -110,7 +131,7 @@ pub fn file_row_line(
 
     let mut spans = vec![
         Span::styled(name_txt, style),
-        Span::styled(dir_txt, style.fg(Color::DarkGray)),
+        Span::styled(dir_txt, style.fg(theme::FAINT)),
         Span::styled(" ".repeat(pad), style),
     ];
     let mut hits = Vec::new();
@@ -122,7 +143,7 @@ pub fn file_row_line(
         hits.push((x, action.clone()));
         x += 3;
     }
-    spans.push(Span::styled(code_s, style.fg(code_color(code))));
+    spans.push(Span::styled(code_s, code_style(style, code)));
     (Line::from(spans), hits)
 }
 
@@ -153,6 +174,21 @@ mod tests {
         let buttons = [("+", Action::StageAll)];
         let r = row("src/components/changes.rs", 20, &buttons);
         assert_eq!(r, " changes.rs src… + M");
+    }
+
+    #[test]
+    fn selection_bar_takes_the_spacer_column_only() {
+        let sel = theme::selection(true);
+        let (line, _) = file_row_line("a.rs", 'M', 1, 12, sel, &[]);
+        let before: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let marked = selection_bar(line);
+        let after: String = marked.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(after, before.replacen(' ', "▌", 1));
+        assert_eq!(marked.spans[0].style.fg, Some(theme::GOLD));
+        assert_eq!(marked.spans[0].style.bg, sel.bg);
+        // A row with no spacer column is left untouched.
+        let bare = Line::from("x");
+        assert_eq!(selection_bar(bare.clone()), bare);
     }
 
     #[test]

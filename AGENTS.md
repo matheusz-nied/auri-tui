@@ -43,7 +43,13 @@ editor.rs      `o` = edit in `$VISUAL`/`$EDITOR` (else `vi`): pure
                `command` (editor + per-editor line-jump args) +
                `EditorLauncher` trait; `ShellEditor` runs it via `sh -c`
 highlight.rs   syntax highlighting (syntect + two-face = bat's grammars,
-               embedded, OneHalfDark): pure, incremental `Highlighter`
+               embedded; the token colors are the astro theme built in code):
+               pure, incremental `Highlighter`
+theme.rs       the "astro" palette shared with the landing page
+               (`site/index.html`): warm black bg, ivory text, gold as the
+               only accent. EVERY color the UI draws comes from here —
+               components never spell a `Color::` literal (tests excepted).
+               `app.rs` paints `theme::base()` over the whole frame first.
 text.rs        display width in terminal columns (CJK/emoji = 2): `width`,
                `slice`, `truncate`, `ellipsize` — use these, never
                `chars().count()`, for anything drawn

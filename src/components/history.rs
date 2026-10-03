@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
@@ -12,8 +12,9 @@ use crate::action::{Action, PanelId};
 use crate::component::Component;
 use crate::git::{Commit, CommitFile};
 use crate::text;
+use crate::theme;
 
-use super::{border_style, file_row_line, selection_style, SCROLL_LINES};
+use super::{border_style, file_row_line, selection_bar, selection_style, SCROLL_LINES};
 
 /// Commits fetched per page.
 pub const HISTORY_PAGE: usize = 200;
@@ -271,11 +272,11 @@ fn commit_row_line(
     let used = 3 + text::width(&subject) + author_w;
     let pad = avail.saturating_sub(used);
     Line::from(vec![
-        Span::styled(" ● ", style.fg(Color::Cyan)),
+        Span::styled(" ● ", style.fg(theme::GOLD)),
         Span::styled(subject, subj_style),
-        Span::styled(author, style.fg(Color::DarkGray)),
+        Span::styled(author, style.fg(theme::FAINT)),
         Span::styled(" ".repeat(pad + 1), style),
-        Span::styled(date, style.fg(Color::DarkGray)),
+        Span::styled(date, style.fg(theme::FAINT)),
     ])
 }
 
@@ -427,7 +428,7 @@ impl Component for History {
 
         if self.commits.is_empty() {
             f.render_widget(
-                Paragraph::new(" No commits yet").style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new(" No commits yet").style(theme::faint()),
                 inner,
             );
             return;
@@ -449,11 +450,11 @@ impl Component for History {
                 let style = if i == self.selected {
                     selection_style(focused && self.active)
                 } else if self.hover == Some(i) {
-                    Style::default().bg(Color::Rgb(30, 30, 40))
+                    theme::hover()
                 } else {
                     Style::default()
                 };
-                match *row {
+                let line = match *row {
                     Row::Commit(ci) => commit_row_line(
                         &self.commits[ci],
                         self.expanded.contains(&self.commits[ci].hash),
@@ -465,12 +466,17 @@ impl Component for History {
                         let hash = &self.commits[ci].hash;
                         match self.files.get(hash).and_then(|fs| fs.get(fi)) {
                             Some(cf) => file_row_line(&cf.path, cf.code, 3, width, style, &[]).0,
-                            None => Line::from(Span::styled("   …", style.fg(Color::DarkGray))),
+                            None => Line::from(Span::styled("   …", style.fg(theme::FAINT))),
                         }
                     }
                     Row::Loading(_) => {
-                        Line::from(Span::styled("   loading…", style.fg(Color::DarkGray)))
+                        Line::from(Span::styled("   loading…", style.fg(theme::FAINT)))
                     }
+                };
+                if i == self.selected && focused && self.active {
+                    selection_bar(line)
+                } else {
+                    line
                 }
             })
             .collect();

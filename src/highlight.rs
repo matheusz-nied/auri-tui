@@ -12,13 +12,14 @@ use std::sync::OnceLock;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Theme};
+use syntect::highlighting::{
+    FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings,
+};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
-use two_face::theme::EmbeddedThemeName;
 
 use crate::text;
+use crate::theme as palette;
 
-const THEME: EmbeddedThemeName = EmbeddedThemeName::OneHalfDark;
 /// Lines past this are left plain — highlighting is linear in the distance
 /// scrolled and a jump to the end of a huge file would freeze the UI.
 const MAX_LINES: usize = 20_000;
@@ -36,7 +37,72 @@ fn syntaxes() -> &'static SyntaxSet {
 
 fn theme() -> &'static Theme {
     static THEME_CELL: OnceLock<Theme> = OnceLock::new();
-    THEME_CELL.get_or_init(|| two_face::theme::extra().get(THEME).clone())
+    THEME_CELL.get_or_init(astro_theme)
+}
+
+fn syn_color(c: Color) -> syntect::highlighting::Color {
+    let Color::Rgb(r, g, b) = c else {
+        unreachable!("palette colors are Rgb")
+    };
+    syntect::highlighting::Color { r, g, b, a: 0xff }
+}
+
+/// The landing page's token colors (see `theme.rs`), built in code rather
+/// than loaded from a `.tmTheme`. Later items win only when their selector
+/// is more specific, so `keyword.operator` below can override `keyword`.
+fn astro_theme() -> Theme {
+    let item = |selectors: &str, fg: Color, font: Option<FontStyle>| ThemeItem {
+        scope: selectors
+            .parse::<ScopeSelectors>()
+            .expect("valid scope selector"),
+        style: StyleModifier {
+            foreground: Some(syn_color(fg)),
+            background: None,
+            font_style: font,
+        },
+    };
+    let ink = palette::INK;
+    Theme {
+        name: Some("astro".into()),
+        author: None,
+        settings: ThemeSettings {
+            foreground: Some(syn_color(ink)),
+            background: Some(syn_color(palette::BG)),
+            ..ThemeSettings::default()
+        },
+        scopes: vec![
+            item(
+                "comment, meta.attribute, meta.annotation, punctuation.definition.annotation",
+                palette::SYN_COMMENT,
+                Some(FontStyle::ITALIC),
+            ),
+            item(
+                "string, markup.raw, markup.inline.raw",
+                palette::SYN_STRING,
+                None,
+            ),
+            item(
+                "keyword, storage, constant.language, variable.language, markup.list",
+                palette::SYN_KEYWORD,
+                None,
+            ),
+            item("keyword.operator", ink, None),
+            item(
+                "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, \
+                 entity.name.trait, entity.name.namespace, support.type, support.class, \
+                 storage.type.numeric, storage.type.primitive, constant.numeric, \
+                 entity.name.section",
+                palette::SYN_TYPE,
+                None,
+            ),
+            item(
+                "entity.name.function, support.function, variable.function, meta.function-call",
+                ink,
+                None,
+            ),
+            item("markup.heading", ink, Some(FontStyle::BOLD)),
+        ],
+    }
 }
 
 /// Grammar for a repo-relative path: whole file name first (`Makefile`,

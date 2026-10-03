@@ -12,13 +12,14 @@ use crate::component::Component;
 use crate::git::{CellKind, DiffCell, DiffDoc, DiffRow, DiffSource, RowKind};
 use crate::highlight::Highlighter;
 use crate::text;
+use crate::theme;
 
 use super::hitbox::{button_span, Hitboxes};
 use super::{border_style, SCROLL_LINES};
 
-const REMOVED_BG: Color = Color::Rgb(60, 20, 20);
-const ADDED_BG: Color = Color::Rgb(20, 50, 20);
-const FILLER_BG: Color = Color::Rgb(30, 30, 30);
+const REMOVED_BG: Color = theme::DEL_BG;
+const ADDED_BG: Color = theme::ADD_BG;
+const FILLER_BG: Color = theme::BG_PANEL;
 
 /// Side-by-side diff viewer. Each half shows a right-aligned line-number
 /// gutter plus syntax-highlighted text; removed cells get a red background,
@@ -196,12 +197,12 @@ fn cell_line(
     text_w: usize,
     scroll_x: usize,
 ) -> Line<'static> {
-    let gutter_style = Style::default().fg(Color::DarkGray);
+    let gutter_style = theme::faint();
     let Some((c, idx)) = cell else {
         let filler: String = "░".repeat(text_w);
         return Line::from(vec![
             Span::styled(" ".repeat(gutter_w + 1), gutter_style),
-            Span::styled(filler, Style::default().fg(Color::DarkGray).bg(FILLER_BG)),
+            Span::styled(filler, Style::default().fg(theme::LINE).bg(FILLER_BG)),
         ]);
     };
     let bg = match c.kind {
@@ -224,7 +225,7 @@ fn cell_line(
 
 fn hunk_header_line(text: &str, gutter_w: usize, text_w: usize) -> Line<'static> {
     let style = Style::default()
-        .fg(Color::DarkGray)
+        .fg(theme::FAINT)
         .add_modifier(Modifier::ITALIC);
     let text = text::truncate(text, text_w);
     let pad = text_w.saturating_sub(text::width(&text));
@@ -353,10 +354,7 @@ impl Component for DiffView {
             }
             bx -= 3;
             let rect = Rect::new(bx, area.y, 3, 1);
-            f.render_widget(
-                button_span(glyph, Style::default().fg(Color::DarkGray)),
-                rect,
-            );
+            f.render_widget(button_span(glyph, theme::muted()), rect);
             self.hitboxes.push(rect, action.clone());
         }
 
@@ -367,12 +365,12 @@ impl Component for DiffView {
             } else {
                 "Select a file to view its diff"
             };
-            let hint = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
+            let hint = Paragraph::new(text).style(theme::muted());
             f.render_widget(hint, centered_hint(inner));
             return;
         };
         if doc.binary {
-            let msg = Paragraph::new("Binary file").style(Style::default().fg(Color::DarkGray));
+            let msg = Paragraph::new("Binary file").style(theme::muted());
             f.render_widget(msg, centered_hint(inner));
             return;
         }

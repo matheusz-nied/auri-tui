@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
@@ -14,9 +14,10 @@ use crate::fs::{parent, EntryKind};
 use crate::git::{FileChange, Section};
 use crate::icons::{dir_icon, file_icon, IconStyle};
 use crate::text;
+use crate::theme;
 
 use super::hitbox::{button_span, Hitboxes};
-use super::{border_style, code_color, selection_style, SCROLL_LINES};
+use super::{border_style, code_color, selection_bar, selection_style, SCROLL_LINES};
 
 /// VS Code–style file explorer. Directory listings are loaded lazily: an
 /// expand emits `LoadDirs` for that dir and every `Refresh` re-lists the
@@ -238,7 +239,7 @@ fn tree_row_line(
     let used = prefix_w + text::width(&name) + text::width(&mark);
     let pad = width.saturating_sub(used);
     Line::from(vec![
-        Span::styled(indent, style.fg(Color::DarkGray)),
+        Span::styled(indent, style.fg(theme::FAINT)),
         Span::styled(icon_text, style.fg(icon.color)),
         Span::styled(name, name_style),
         Span::styled(" ".repeat(pad), style),
@@ -359,15 +360,12 @@ impl Component for FileTree {
             }
             bx -= 3;
             let rect = Rect::new(bx, area.y, 3, 1);
-            f.render_widget(
-                button_span(glyph, Style::default().fg(Color::DarkGray)),
-                rect,
-            );
+            f.render_widget(button_span(glyph, theme::muted()), rect);
             self.hitboxes.push(rect, action);
         }
 
         if self.rows.is_empty() {
-            let hint = Paragraph::new(" Empty folder").style(Style::default().fg(Color::DarkGray));
+            let hint = Paragraph::new(" Empty folder").style(theme::faint());
             f.render_widget(hint, inner);
             return;
         }
@@ -382,12 +380,17 @@ impl Component for FileTree {
                 let style = if i == self.selected {
                     selection_style(focused)
                 } else if self.hover == Some(i) {
-                    Style::default().bg(Color::Rgb(35, 35, 45))
+                    theme::hover()
                 } else {
                     Style::default()
                 };
                 let deco = self.decorations.get(&row.path).copied();
-                tree_row_line(row, deco, self.icons, width, style)
+                let line = tree_row_line(row, deco, self.icons, width, style);
+                if i == self.selected && focused {
+                    selection_bar(line)
+                } else {
+                    line
+                }
             })
             .collect();
         f.render_widget(Paragraph::new(lines), inner);

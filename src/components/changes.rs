@@ -1,6 +1,6 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
@@ -9,9 +9,10 @@ use crate::action::{Action, PanelId};
 use crate::component::Component;
 use crate::git::{FileChange, Section};
 use crate::text;
+use crate::theme;
 
 use super::hitbox::{button_span, Hitboxes};
-use super::{border_style, file_row_line, selection_style, SCROLL_LINES};
+use super::{border_style, file_row_line, selection_bar, selection_style, SCROLL_LINES};
 
 /// VS Code–style changes list: "Merge Changes" (conflicts, only while there
 /// are any), then "Staged Changes", then "Changes" (unstaged + untracked). Section headers are rendered but
@@ -354,12 +355,12 @@ impl Component for Changes {
             .take(self.view_height)
             .map(|(i, row)| match row {
                 Row::Header(h, button) => {
-                    let style = Style::default().fg(Color::DarkGray);
+                    let style = theme::section_header();
                     let spans = if let Some((glyph, action)) = button {
                         // 3-column button, right-aligned; truncate the title
                         // so the button always fits.
                         let bx = width.saturating_sub(3);
-                        let title = text::truncate(&format!(" {h}"), bx);
+                        let title = text::truncate(&format!(" {}", h.to_uppercase()), bx);
                         let pad = bx - text::width(&title);
                         let y = inner.y + (i - self.scroll) as u16;
                         hits.push((inner.x + bx as u16, y, action.clone()));
@@ -369,7 +370,7 @@ impl Component for Changes {
                             button_span(glyph, style),
                         ]
                     } else {
-                        vec![Span::styled(format!(" {h}"), style)]
+                        vec![Span::styled(format!(" {}", h.to_uppercase()), style)]
                     };
                     Line::from(spans)
                 }
@@ -392,7 +393,11 @@ impl Component for Changes {
                     for (x, action) in row_hits {
                         hits.push((inner.x + x, y, action));
                     }
-                    line
+                    if i == self.selected && focused && self.active {
+                        selection_bar(line)
+                    } else {
+                        line
+                    }
                 }
             })
             .collect();
@@ -582,13 +587,13 @@ mod tests {
                     .collect()
             })
             .collect();
-        assert!(rows[0].starts_with(" Merge Changes (1)"), "{rows:?}");
+        assert!(rows[0].starts_with(" MERGE CHANGES (1)"), "{rows:?}");
         assert!(
             rows[1].contains("both.rs") && rows[1].ends_with('!'),
             "{rows:?}"
         );
-        assert!(rows[2].starts_with(" Staged Changes (1)"), "{rows:?}");
-        assert!(rows[4].starts_with(" Changes (1)"), "{rows:?}");
+        assert!(rows[2].starts_with(" STAGED CHANGES (1)"), "{rows:?}");
+        assert!(rows[4].starts_with(" CHANGES (1)"), "{rows:?}");
         // Selected conflict: only a stage (= mark resolved) button, and `d`
         // does nothing.
         assert_eq!(selected(&c), Some(("both.rs".into(), Section::Conflicted)));

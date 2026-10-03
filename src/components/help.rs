@@ -1,6 +1,6 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
@@ -9,6 +9,7 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::keymap::HelpSection;
 use crate::text;
+use crate::theme;
 
 use super::SCROLL_LINES;
 
@@ -48,7 +49,7 @@ impl Help {
             lines.push(Line::from(Span::styled(
                 section.title.clone(),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::GOLD)
                     .add_modifier(Modifier::BOLD),
             )));
             for (key, what) in &section.rows {
@@ -56,9 +57,9 @@ impl Help {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {key}{:pad$}  ", ""),
-                        Style::default().fg(Color::Yellow),
+                        Style::default().fg(theme::INK).add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(what.clone()),
+                    Span::styled(what.clone(), theme::muted()),
                 ]));
             }
         }
@@ -152,7 +153,8 @@ impl Component for Help {
             .min(lines.len().saturating_sub(self.view_height));
         let more = self.scroll + self.view_height < lines.len();
         let mut block = Block::bordered()
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(theme::border(true))
+            .style(theme::base())
             .title(" Keys ")
             .title_bottom(Line::from(" esc close ").right_aligned());
         if more {

@@ -1,6 +1,5 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
@@ -10,6 +9,7 @@ use crate::component::Component;
 use crate::fs::{FileDoc, MAX_FILE_BYTES};
 use crate::highlight::Highlighter;
 use crate::text;
+use crate::theme;
 
 use super::{border_style, SCROLL_LINES};
 
@@ -157,7 +157,7 @@ impl Component for FileView {
         if let Some(hint) = hint {
             let y = inner.y + inner.height / 2;
             f.render_widget(
-                Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new(hint).style(theme::muted()),
                 Rect::new(inner.x, y, inner.width, 1.min(inner.height)),
             );
             return;
@@ -167,7 +167,7 @@ impl Component for FileView {
         };
         let gutter_w = doc.lines.len().to_string().len();
         let text_w = (inner.width as usize).saturating_sub(gutter_w + 1);
-        let gutter_style = Style::default().fg(Color::DarkGray);
+        let gutter_style = theme::faint();
         let highlighter = &mut self.highlighter;
         highlighter.advance(
             doc.lines.iter().map(String::as_str),
@@ -194,6 +194,7 @@ impl Component for FileView {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use ratatui::Terminal;
 
     fn doc(path: &str, n: usize) -> FileDoc {

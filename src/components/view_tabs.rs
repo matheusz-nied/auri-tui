@@ -3,12 +3,14 @@
 //! clicks through the returned hitboxes.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::action::Action;
 use crate::layout::SidebarView;
+use crate::theme;
 
 use super::hitbox::Hitboxes;
 
@@ -16,9 +18,6 @@ const TABS: [(SidebarView, &str, &str); 2] = [
     (SidebarView::Explorer, "Explorer", "Files"),
     (SidebarView::SourceControl, "Source Control", "Git"),
 ];
-
-const ACTIVE_BG: Color = Color::Rgb(40, 45, 65);
-const INACTIVE_BG: Color = Color::Rgb(25, 25, 32);
 
 /// Draw two equal-width 1-row tabs on `area`'s first row (the active one
 /// highlighted) and register each as a `SetSidebarView` button; the rows
@@ -44,23 +43,27 @@ pub fn render(f: &mut Frame, area: Rect, active: SidebarView, hits: &mut Hitboxe
         let label = if long_fits { long } else { short };
         let label: String = label.chars().take(w).collect();
         let left = (w - label.chars().count()) / 2;
-        let text = format!(
-            "{:left$}{label}{:right$}",
-            "",
-            "",
-            right = w - left - label.chars().count()
-        );
+        let right = w - left - label.chars().count();
+        // The active tab merges into the page and carries a gold underline
+        // under its label (the landing page's tab style); the other recedes
+        // onto the bar.
         let (bg, label_style) = if view == active {
             (
-                ACTIVE_BG,
+                theme::BG,
                 Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
+                    .fg(theme::INK)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    .underline_color(theme::GOLD),
             )
         } else {
-            (INACTIVE_BG, Style::default().fg(Color::DarkGray))
+            (theme::BG_BAR, Style::default().fg(theme::MUTED))
         };
-        f.render_widget(Span::styled(text, label_style.bg(bg)), rect);
+        let line = Line::from(vec![
+            Span::raw(" ".repeat(left)),
+            Span::styled(label, label_style),
+            Span::raw(" ".repeat(right)),
+        ]);
+        f.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), rect);
         hits.push(rect, Action::SetSidebarView(view));
     }
 }
@@ -69,6 +72,7 @@ pub fn render(f: &mut Frame, area: Rect, active: SidebarView, hits: &mut Hitboxe
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use ratatui::Terminal;
 
     fn draw(width: u16, active: SidebarView) -> (String, Hitboxes) {
