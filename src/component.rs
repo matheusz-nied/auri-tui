@@ -39,6 +39,12 @@ pub trait Component {
         ""
     }
 
+    /// Rows this panel wants when the layout sizes it to its content (only
+    /// the commit input's slot is). `None` keeps the layout's default.
+    fn preferred_height(&self) -> Option<u16> {
+        None
+    }
+
     /// Called by `App` when the mouse cursor leaves this panel — clear any
     /// hover state here.
     fn mouse_leave(&mut self) {}

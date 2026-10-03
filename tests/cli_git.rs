@@ -109,12 +109,53 @@ fn commit_clears_staged_file() {
     let git = CliGit::new(dir.path());
 
     git.stage("tracked.txt").unwrap();
-    git.commit("update tracked").unwrap();
+    git.commit("update tracked", false).unwrap();
 
     let status = git.status().unwrap();
     assert!(status.iter().all(|f| f.path != "tracked.txt"));
     // The untracked file is still reported.
     assert!(status.iter().any(|f| f.path == "untracked.txt"));
+}
+
+#[test]
+fn multiline_message_round_trips() {
+    let dir = make_repo();
+    let git = CliGit::new(dir.path());
+    git.stage("tracked.txt").unwrap();
+    git.commit("subject\n\nbody line 1\nbody line 2", false)
+        .unwrap();
+    assert_eq!(
+        git.last_commit_message().unwrap(),
+        "subject\n\nbody line 1\nbody line 2"
+    );
+}
+
+#[test]
+fn amend_replaces_the_last_commit_without_staged_changes() {
+    let dir = make_repo();
+    let git = CliGit::new(dir.path());
+    git.stage("tracked.txt").unwrap();
+    git.commit("first try", false).unwrap();
+    let before = git.head().unwrap();
+
+    git.commit("second try", true).unwrap();
+    assert_ne!(git.head().unwrap(), before);
+    let log = git.log(0, 10).unwrap();
+    let subjects: Vec<_> = log.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, ["second try", "initial"]);
+    // The amended commit keeps the change.
+    assert!(git
+        .status()
+        .unwrap()
+        .iter()
+        .all(|f| f.path != "tracked.txt"));
+}
+
+#[test]
+fn last_commit_message_errors_without_commits() {
+    let dir = make_unborn_repo();
+    let git = CliGit::new(dir.path());
+    assert!(git.last_commit_message().is_err());
 }
 
 #[test]
@@ -178,7 +219,7 @@ fn commit_works_on_unborn_repo() {
     let git = CliGit::new(dir.path());
 
     git.stage("new.txt").unwrap();
-    git.commit("first commit").unwrap();
+    git.commit("first commit", false).unwrap();
     assert!(git.status().unwrap().is_empty());
     // After the first commit, `restore --staged` is usable again.
     fs::write(dir.path().join("new.txt"), "changed\n").unwrap();

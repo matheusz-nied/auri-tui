@@ -49,7 +49,7 @@ Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
 `ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`,
 `LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`, `LoadDirs`,
-`OpenFile`, `OpenInEditor`) are executed by `App` via `Box<dyn GitBackend>` /
+`OpenFile`, `OpenInEditor`, `LoadLastCommitMessage`) are executed by `App` via `Box<dyn GitBackend>` /
 `Box<dyn FsBackend>` → results (`StatusLoaded`, `DiffLoaded`,
 `HistoryLoaded`, `CommitFilesLoaded`, `DirLoaded`, `FileLoaded`,
 `FileReloaded`, `Error`) are broadcast to every component's `update`.
@@ -62,7 +62,21 @@ is worktree vs HEAD), `Staged`, `Unstaged`, `Untracked` (code `U`).
 `git commit` runs with the terminal handed over (`TerminalHandoff`:
 `release` leaves raw mode/alt screen, `reclaim` re-enters and forces a full
 redraw) when `commit_may_prompt()` — `commit.gpgsign` or an executable
-commit hook — so pinentry/interactive hooks get a usable tty.
+commit hook — so pinentry/interactive hooks get a usable tty. The full
+redraw is `redraw_from_scratch` (`Terminal::resize` to the current size),
+never `Terminal::clear`: that one queries the cursor position, and a
+terminal that doesn't answer in time would end the app.
+
+Commit input: the message is multi-line (Ctrl-J, or Alt/Shift-Enter when
+reported, inserts a newline; Enter commits) and the box grows to
+`MAX_LINES` text rows, then scrolls — `Component::preferred_height` feeds
+`Sidebar::commit_height`, which `App` sets before `layout::compute`.
+`Action::Commit { message, amend }`: amend (`git commit --amend`, Ctrl-A
+or the `amend` toggle → `ToggleAmend`) needs nothing staged; a plain
+commit errors "Nothing staged". Switching amend on with an empty box emits
+`LoadLastCommitMessage` → `LastCommitMessageLoaded` prefills it; switching
+off drops that prefill unless edited. `CommitDone` clears the box and
+leaves amend mode.
 
 `OpenInEditor { path, line }` (`o` in Changes, the tree, the file viewer
 and the diff) always hands the terminal over: `App` checks the file still

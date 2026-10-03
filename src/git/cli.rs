@@ -265,9 +265,21 @@ impl GitBackend for CliGit {
         Ok(())
     }
 
-    fn commit(&self, message: &str) -> Result<()> {
-        self.run(&["commit", "-m", message], &[])?;
+    fn commit(&self, message: &str, amend: bool) -> Result<()> {
+        let mut args = vec!["commit", "-m", message];
+        if amend {
+            args.push("--amend");
+        }
+        self.run(&args, &[])?;
         Ok(())
+    }
+
+    fn last_commit_message(&self) -> Result<String> {
+        if self.head()?.is_none() {
+            bail!("no commits yet");
+        }
+        let out = self.run(&["log", "-1", "--format=%B", "HEAD"], &[])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     }
 
     fn commit_may_prompt(&self) -> bool {

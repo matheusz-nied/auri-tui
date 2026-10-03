@@ -119,9 +119,22 @@ pub enum Action {
     FileReloaded(FileDoc),
     /// Collapse every explorer folder (toolbar button; `App` ignores it).
     ExplorerCollapseAll,
-    /// Commit the staged changes with this message (side effect).
-    Commit(String),
+    /// Commit the staged changes with this message (side effect). `amend`
+    /// replaces the last commit instead and needs nothing staged.
+    Commit {
+        message: String,
+        amend: bool,
+    },
+    /// A commit (or amend) succeeded — the input clears and leaves amend
+    /// mode.
     CommitDone,
+    /// Switch the commit input's amend mode (`Ctrl-A` or its toggle;
+    /// handled by `CommitInput`, which may ask for `LoadLastCommitMessage`).
+    ToggleAmend,
+    /// Fetch the last commit's full message to prefill an amend (side
+    /// effect, executed by `App`).
+    LoadLastCommitMessage,
+    LastCommitMessageLoaded(String),
     /// Generate a commit message from the staged diff with the configured AI
     /// CLI (side effect, run by `App` in the background). The result only
     /// fills the input via `CommitMessageGenerated` — it never commits.

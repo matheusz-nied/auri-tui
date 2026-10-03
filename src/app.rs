@@ -469,25 +469,26 @@ impl App {
                 Ok(()) => self.enqueue(Action::Refresh),
                 Err(e) => self.enqueue(Action::Error(format!("discard: {e}"))),
             },
-            Action::Commit(msg) => {
+            Action::Commit { message, amend } => {
                 let staged = self
                     .last_status
                     .iter()
                     .any(|f| f.section == Section::Staged);
-                if !staged {
+                if !staged && !amend {
                     self.enqueue(Action::Error("Nothing staged".to_string()));
                 } else {
                     let handoff = self.git.commit_may_prompt();
                     if handoff {
                         self.terminal.release();
                     }
-                    let result = self.git.commit(&msg);
+                    let result = self.git.commit(&message, amend);
                     if handoff {
                         self.terminal.reclaim();
                         self.needs_clear = true;
                     }
                     match result {
                         Ok(()) => {
+                            self.notify(if amend { "Amended" } else { "Committed" }, false);
                             self.enqueue(Action::CommitDone);
                             self.enqueue(Action::Refresh);
                         }
@@ -495,9 +496,10 @@ impl App {
                     }
                 }
             }
-            Action::CommitDone => {
-                self.notify("Committed", false);
-            }
+            Action::LoadLastCommitMessage => match self.git.last_commit_message() {
+                Ok(message) => self.enqueue(Action::LastCommitMessageLoaded(message)),
+                Err(e) => self.enqueue(Action::Error(format!("amend: {e}"))),
+            },
             Action::GenerateCommitMessage => self.start_ai_generation(),
             Action::CancelCommitMessage => self.ai.cancel(),
             Action::ToggleAiProvider => self.toggle_ai_provider(),
@@ -518,6 +520,9 @@ impl App {
             | Action::CommitMessageGenerating { .. }
             | Action::CommitMessageGenerated(_)
             | Action::CommitMessageFailed
+            | Action::CommitDone
+            | Action::ToggleAmend
+            | Action::LastCommitMessageLoaded(_)
             | Action::DirLoaded { .. }
             | Action::FileLoaded(_)
             | Action::FileReloaded(_)
@@ -991,6 +996,15 @@ impl App {
         let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
         self.main_area = vertical[0];
         self.status_bar = vertical[1];
+        // The commit box grows with its message's lines.
+        if let Some(h) = self
+            .components
+            .iter()
+            .find(|(id, _)| *id == PanelId::CommitInput)
+            .and_then(|(_, c)| c.preferred_height())
+        {
+            self.sidebar.commit_height = h;
+        }
         let pr = layout::compute(vertical[0], &self.sidebar);
 
         self.rects.clear();
@@ -1103,9 +1117,13 @@ mod tests {
     struct FakeGit {
         /// When set, commits "may prompt" and are recorded here.
         prompting: Option<CallLog>,
+        /// Every commit made.
+        commits: Commits,
     }
 
     type CallLog = Rc<RefCell<Vec<&'static str>>>;
+    /// (message, amend) of each `FakeGit` commit.
+    type Commits = Rc<RefCell<Vec<(String, bool)>>>;
 
     /// Records handoffs into the same log as `FakeGit`'s commits.
     struct FakeHandoff(CallLog);
@@ -1148,11 +1166,15 @@ mod tests {
         fn unstage_all(&self) -> Result<()> {
             Ok(())
         }
-        fn commit(&self, _message: &str) -> Result<()> {
+        fn commit(&self, message: &str, amend: bool) -> Result<()> {
             if let Some(log) = &self.prompting {
                 log.borrow_mut().push("commit");
             }
+            self.commits.borrow_mut().push((message.to_string(), amend));
             Ok(())
+        }
+        fn last_commit_message(&self) -> Result<String> {
+            Ok("last subject\n\nlast body".to_string())
         }
         fn commit_may_prompt(&self) -> bool {
             self.prompting.is_some()
@@ -1668,6 +1690,7 @@ mod tests {
         let log = CallLog::default();
         let git = FakeGit {
             prompting: Some(log.clone()),
+            ..FakeGit::default()
         };
         let mut app = App::new(
             Box::new(git),
@@ -1676,7 +1699,10 @@ mod tests {
         )
         .with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
         app.last_status = vec![staged_file()];
-        app.enqueue(Action::Commit("msg".to_string()));
+        app.enqueue(Action::Commit {
+            message: "msg".to_string(),
+            amend: false,
+        });
         app.dispatch();
         assert_eq!(*log.borrow(), ["release", "commit", "reclaim"]);
         assert!(
@@ -1691,7 +1717,10 @@ mod tests {
         let mut app =
             app(MemoryStore::new(None)).with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
         app.last_status = vec![staged_file()];
-        app.enqueue(Action::Commit("msg".to_string()));
+        app.enqueue(Action::Commit {
+            message: "msg".to_string(),
+            amend: false,
+        });
         app.dispatch();
         assert!(log.borrow().is_empty());
         assert!(!app.needs_clear);
@@ -1837,11 +1866,64 @@ mod tests {
         assert_eq!(frame(&mut term, &mut app), before);
     }
 
+    fn commit_app() -> (App, Commits) {
+        let git = FakeGit::default();
+        let commits = Rc::clone(&git.commits);
+        let app = App::new(
+            Box::new(git),
+            Box::new(FakeFs::default()),
+            Box::new(MemoryStore::new(None)),
+        );
+        (app, commits)
+    }
+
+    #[test]
+    fn amend_needs_nothing_staged_but_a_commit_does() {
+        let (mut app, commits) = commit_app();
+        let commit = |amend| Action::Commit {
+            message: "msg".to_string(),
+            amend,
+        };
+        app.enqueue(commit(false));
+        app.dispatch();
+        assert!(matches!(&app.message, Some((m, true)) if m == "Nothing staged"));
+        app.enqueue(commit(true));
+        app.dispatch();
+        assert_eq!(*commits.borrow(), [("msg".to_string(), true)]);
+        assert!(matches!(&app.message, Some((m, false)) if m == "Amended"));
+    }
+
+    #[test]
+    fn ctrl_a_in_the_commit_box_prefills_the_last_message_and_amends() {
+        let (mut app, commits) = commit_app();
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        app.on_key(KeyEvent::from(KeyCode::Char('c')));
+        app.on_key(ctrl('a'));
+        app.dispatch();
+        // Three message lines: the box grows from 1 to 3 text rows.
+        let text = screen(&mut app);
+        assert!(
+            text.contains("last subject") && text.contains("last body"),
+            "{text}"
+        );
+        assert!(text.contains("✓ Amend"), "{text}");
+        assert_eq!(app.rects[&PanelId::CommitInput].height, 6);
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        app.dispatch();
+        assert_eq!(
+            *commits.borrow(),
+            [("last subject\n\nlast body".to_string(), true)]
+        );
+        // Done: back to an empty one-line box in commit mode.
+        let text = screen(&mut app);
+        assert!(text.contains("✓ Commit"), "{text}");
+        assert_eq!(app.rects[&PanelId::CommitInput].height, 4);
+    }
+
     #[test]
     fn status_messages_expire() {
         let (mut app, _fs) = explorer_app(MemoryStore::new(None));
-        app.enqueue(Action::CommitDone);
-        app.dispatch();
+        app.notify("Committed", false);
         let t0 = app.message_at;
         app.expire_message(t0 + MESSAGE_TTL - Duration::from_millis(1));
         assert!(matches!(&app.message, Some((m, false)) if m == "Committed"));

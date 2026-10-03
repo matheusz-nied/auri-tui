@@ -122,7 +122,12 @@ pub trait GitBackend {
     /// silently mark them resolved; that is `stage(path)`, one at a time.
     fn stage_all(&self) -> Result<()>;
     fn unstage_all(&self) -> Result<()>;
-    fn commit(&self, message: &str) -> Result<()>;
+    /// Commit the staged changes. `amend` replaces the last commit instead
+    /// (its message, plus anything staged) — valid with nothing staged.
+    fn commit(&self, message: &str, amend: bool) -> Result<()>;
+    /// The last commit's full message (subject and body), to prefill an
+    /// amend. Errors when there is no commit yet.
+    fn last_commit_message(&self) -> Result<String>;
     /// Whether `commit` may talk to the terminal — commit signing (GPG
     /// pinentry, ssh passphrase) or commit hooks that can prompt — so the
     /// TUI must hand the terminal over while it runs.

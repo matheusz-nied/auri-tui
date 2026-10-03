@@ -70,7 +70,10 @@ supports it; auri resumes when the editor exits.
 **Diff / file viewer** — `j`/`k` scroll, `PgUp`/`PgDn`, `h`/`l` scroll
 sideways, `n`/`N` next/previous change (diff).
 
-**Commit box** — type, `Enter` to commit, `Esc` to leave.
+**Commit box** — type, `Enter` to commit, `Ctrl-J` for a new line (the box
+grows), `Esc` to leave. `Ctrl-A` or the `amend` toggle switches to amending
+the last commit: an empty box gets its message, and nothing needs to be
+staged.
 
 ### AI commit messages (optional)
 

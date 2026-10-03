@@ -11,7 +11,8 @@ pub const RESIZE_STEP: u16 = 4;
 /// Height of the Explorer/Source Control tab bar atop the sidebar: the
 /// 1-row tabs plus a blank spacing row.
 const TABS_HEIGHT: u16 = 2;
-/// Commit input height inside the sidebar.
+/// Default commit input height inside the sidebar: a one-line box plus
+/// the commit button row.
 const COMMIT_HEIGHT: u16 = 4;
 /// Minimum height for the changes and history panels.
 const MIN_PANEL: u16 = 4;
@@ -46,6 +47,9 @@ pub struct Sidebar {
     dragging_split: bool,
     hover_divider: bool,
     hover_split: bool,
+    /// Commit input height; `App` sets it every frame from the input's
+    /// `preferred_height` (the box grows with the message's lines).
+    pub commit_height: u16,
 }
 
 impl Default for Sidebar {
@@ -59,6 +63,7 @@ impl Default for Sidebar {
             dragging_split: false,
             hover_divider: false,
             hover_split: false,
+            commit_height: COMMIT_HEIGHT,
         }
     }
 }
@@ -135,11 +140,12 @@ impl Sidebar {
     fn split_row(&self, main: Rect) -> Option<u16> {
         let w = self.width_for(main.width);
         let body = body(main);
-        if w == 0 || body.height <= COMMIT_HEIGHT || self.view != SidebarView::SourceControl {
+        let commit_h = self.commit_height;
+        if w == 0 || body.height <= commit_h || self.view != SidebarView::SourceControl {
             return None;
         }
-        let below = body.height - COMMIT_HEIGHT;
-        Some(body.y + COMMIT_HEIGHT + self.split_heights(below).0)
+        let below = body.height - commit_h;
+        Some(body.y + commit_h + self.split_heights(below).0)
     }
 
     /// Whether the cursor is on the changes/history divider row, inside the
@@ -189,7 +195,9 @@ impl Sidebar {
             }
             K::Drag(MouseButton::Left) if self.dragging_split => {
                 let body = body(main);
-                let below = body.height.saturating_sub(COMMIT_HEIGHT.min(body.height));
+                let below = body
+                    .height
+                    .saturating_sub(self.commit_height.min(body.height));
                 let h = (body.y + body.height).saturating_sub(ev.row);
                 self.history_height = Some(self.clamp_history(h, below));
                 true
@@ -294,7 +302,7 @@ pub fn compute(main: Rect, sidebar: &Sidebar) -> PanelRects {
             split_row: None,
         };
     }
-    let commit_h = body.height.min(COMMIT_HEIGHT);
+    let commit_h = body.height.min(sidebar.commit_height);
     let below = body.height - commit_h;
     let (changes_h, history_h) = sidebar.split_heights(below);
     let commit = Rect::new(body.x, body.y, w, commit_h);
@@ -403,6 +411,21 @@ mod tests {
         assert_eq!(pr.diff, Rect::new(35, 0, 65, 25));
         assert_eq!(pr.divider, Some((34, 35)));
         assert_eq!(pr.split_row, Some(17));
+    }
+
+    #[test]
+    fn taller_commit_box_pushes_the_panels_down() {
+        let mut s = visible();
+        s.commit_height = 7;
+        let main = Rect::new(0, 0, 100, 25);
+        let pr = compute(main, &s);
+        // 16 rows below the commit box: history gets 45% = 7.
+        assert_eq!(pr.commit, Some(Rect::new(0, 2, 35, 7)));
+        assert_eq!(pr.changes, Some(Rect::new(0, 9, 35, 9)));
+        assert_eq!(pr.history, Some(Rect::new(0, 18, 35, 7)));
+        // The drag target follows the moved divider.
+        assert_eq!(pr.split_row, s.split_row(main));
+        assert_eq!(pr.split_row, Some(18));
     }
 
     #[test]

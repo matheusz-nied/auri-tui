@@ -17,23 +17,52 @@ use super::hitbox::Hitboxes;
 /// AI button background (idle / generating).
 const AI_BG: Color = Color::Rgb(110, 60, 170);
 const AI_STOP_BG: Color = Color::Rgb(160, 50, 70);
+/// Commit button background, and its color while amending — a warning:
+/// amend rewrites the last commit.
+const COMMIT_BG: Color = Color::Rgb(0, 95, 160);
+const AMEND_BG: Color = Color::Rgb(170, 95, 20);
+/// Disabled commit button.
+const DISABLED_FG: Color = Color::Rgb(110, 120, 130);
+const DISABLED_BG: Color = Color::Rgb(40, 48, 58);
+/// Amend toggle while off.
+const TOGGLE_OFF_BG: Color = Color::Rgb(55, 62, 72);
+/// Amend toggle label, right of the commit button.
+const AMEND_LABEL: &str = " amend ";
 /// Text columns to keep before the AI button shrinks to just its glyph.
 const MIN_TEXT_W: u16 = 16;
+/// Message lines the box grows to before it scrolls.
+const MAX_LINES: usize = 6;
 
-/// Single-line commit message box with an AI button (`✦ AI`) inside on the right,
-/// plus a full-width "✓ Commit" button on the last row that is only enabled
-/// (and clickable) while the message has non-whitespace text. When focused,
-/// printable characters edit the message; Enter emits `Action::Commit`, Esc
-/// returns focus via `FocusNext`. `CommitMessageGenerating` shows progress
-/// and turns the AI button into `■ Stop` (cancel).
+/// Commit message box with an AI button (`✦ AI`) inside on the right, plus
+/// a "✓ Commit" button on the last row — enabled (and clickable) only while
+/// the message has non-whitespace text — and an `amend` toggle beside it.
+///
+/// The message may span lines: Ctrl-J (or Alt/Shift-Enter where the
+/// terminal reports them) inserts a newline, and the box grows up to
+/// `MAX_LINES` text rows (`preferred_height`), then scrolls. Enter emits
+/// `Action::Commit`; Esc returns focus via `FocusNext`.
+///
+/// Ctrl-A or the toggle switch amend mode (`ToggleAmend`): with an empty
+/// box it asks for the last commit's message (`LoadLastCommitMessage`),
+/// which is dropped again if amend is switched off unedited.
+/// `CommitMessageGenerating` shows progress and turns the AI button into
+/// `■ Stop` (cancel).
 #[derive(Default)]
 pub struct CommitInput {
+    /// The message; lines are separated by `'\n'`.
     message: Vec<char>,
     /// Cursor position as a char index into `message`.
     cursor: usize,
+    /// First message line shown once the box scrolls.
+    scroll_row: usize,
     branch: String,
     /// Provider label while an AI generation is running (`■` cancels).
     generating: Option<String>,
+    /// The next commit replaces the last one (`git commit --amend`).
+    amend: bool,
+    /// The last commit's message, as loaded into the empty box when amend
+    /// was switched on.
+    prefill: Option<String>,
     hitboxes: Hitboxes,
 }
 
@@ -42,19 +71,119 @@ impl CommitInput {
         self.message.iter().collect()
     }
 
+    fn set_message(&mut self, text: &str) {
+        self.message = text.chars().collect();
+        self.cursor = self.message.len();
+    }
+
     fn can_commit(&self) -> bool {
         self.message.iter().any(|c| !c.is_whitespace())
+    }
+
+    fn commit_action(&self) -> Action {
+        Action::Commit {
+            message: self.message_text(),
+            amend: self.amend,
+        }
+    }
+
+    fn insert(&mut self, c: char) {
+        self.message.insert(self.cursor, c);
+        self.cursor += 1;
+    }
+
+    fn line_count(&self) -> usize {
+        self.message.iter().filter(|&&c| c == '\n').count() + 1
+    }
+
+    /// Text rows the box shows: one per line, up to `MAX_LINES`.
+    fn visible_lines(&self) -> usize {
+        self.line_count().min(MAX_LINES)
+    }
+
+    /// Start of the line holding char index `i`.
+    fn line_start(&self, i: usize) -> usize {
+        self.message[..i]
+            .iter()
+            .rposition(|&c| c == '\n')
+            .map_or(0, |n| n + 1)
+    }
+
+    /// End (the `'\n'`, or the message end) of the line starting at `start`.
+    fn line_end(&self, start: usize) -> usize {
+        self.message[start..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(self.message.len(), |n| start + n)
+    }
+
+    /// Screen columns taken by `message[range]`.
+    fn cols(&self, range: std::ops::Range<usize>) -> usize {
+        text::width(&self.message[range].iter().collect::<String>())
+    }
+
+    /// Up/Down: the same screen column on the neighbouring line (clamped to
+    /// its end). Past the first/last line, the start/end of the message.
+    fn move_vertically(&mut self, down: bool) {
+        let start = self.line_start(self.cursor);
+        let col = self.cols(start..self.cursor);
+        let target = if down {
+            let end = self.line_end(start);
+            if end == self.message.len() {
+                self.cursor = end;
+                return;
+            }
+            end + 1
+        } else {
+            if start == 0 {
+                self.cursor = 0;
+                return;
+            }
+            self.line_start(start - 1)
+        };
+        let end = self.line_end(target);
+        let mut i = target;
+        while i < end && self.cols(target..i + 1) <= col {
+            i += 1;
+        }
+        self.cursor = i;
+    }
+
+    /// Switch amend mode. Switching on with an empty box asks `App` for the
+    /// last commit's message; switching off drops that message unless it
+    /// was edited.
+    fn toggle_amend(&mut self) -> Option<Action> {
+        self.amend = !self.amend;
+        if self.amend {
+            return (!self.can_commit()).then_some(Action::LoadLastCommitMessage);
+        }
+        if self
+            .prefill
+            .take()
+            .is_some_and(|p| p == self.message_text())
+        {
+            self.set_message("");
+        }
+        None
     }
 }
 
 impl Component for CommitInput {
     fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let newline = (ctrl && key.code == KeyCode::Char('j'))
+            || (key.code == KeyCode::Enter
+                && key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT));
+        if newline {
+            self.insert('\n');
+            return None;
+        }
         match key.code {
-            // Ctrl-chars are commands (^g/^t AI, ^c quit) — never text.
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.message.insert(self.cursor, c);
-                self.cursor += 1;
-            }
+            KeyCode::Char('a') if ctrl => return Some(Action::ToggleAmend),
+            // Other Ctrl-chars are commands (^g/^t AI, ^c quit) — never text.
+            KeyCode::Char(c) if !ctrl => self.insert(c),
             KeyCode::Char(_) => {}
             KeyCode::Backspace => {
                 if self.cursor > 0 {
@@ -69,11 +198,11 @@ impl Component for CommitInput {
             }
             KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
             KeyCode::Right => self.cursor = (self.cursor + 1).min(self.message.len()),
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.message.len(),
-            KeyCode::Enter if self.can_commit() => {
-                return Some(Action::Commit(self.message_text()))
-            }
+            KeyCode::Up => self.move_vertically(false),
+            KeyCode::Down => self.move_vertically(true),
+            KeyCode::Home => self.cursor = self.line_start(self.cursor),
+            KeyCode::End => self.cursor = self.line_end(self.line_start(self.cursor)),
+            KeyCode::Enter if self.can_commit() => return Some(self.commit_action()),
             _ => {}
         }
         None
@@ -90,16 +219,22 @@ impl Component for CommitInput {
         match action {
             Action::BranchLoaded(branch) => self.branch = branch.clone(),
             Action::CommitDone => {
-                self.message.clear();
-                self.cursor = 0;
+                self.set_message("");
+                self.amend = false;
+                self.prefill = None;
+            }
+            Action::ToggleAmend => return self.toggle_amend(),
+            // Only into a box still empty and still amending.
+            Action::LastCommitMessageLoaded(text) if self.amend && !self.can_commit() => {
+                self.set_message(text);
+                self.prefill = Some(text.clone());
             }
             Action::CommitMessageGenerating { provider } => {
                 self.generating = Some(provider.clone());
             }
             Action::CommitMessageGenerated(text) => {
                 self.generating = None;
-                self.message = text.chars().collect();
-                self.cursor = self.message.len();
+                self.set_message(text);
             }
             Action::CommitMessageFailed => self.generating = None,
             _ => {}
@@ -108,7 +243,12 @@ impl Component for CommitInput {
     }
 
     fn hints(&self) -> &'static str {
-        "enter commit · ^g AI message · ^t AI provider · esc back"
+        "enter commit · ^j newline · ^a amend · ^g AI message · ^t AI provider · esc back"
+    }
+
+    fn preferred_height(&self) -> Option<u16> {
+        // Border + text rows + border + commit button row.
+        Some(self.visible_lines() as u16 + 3)
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -123,10 +263,10 @@ impl Component for CommitInput {
         let inner = block.inner(input);
         f.render_widget(block, input);
 
-        // The AI button sits inside the box on the right as a filled pill
-        // (`✦ AI`, `■ Stop` while generating; just the glyph when narrow);
-        // the text gets the rest minus a one-column gap, scrolled so the
-        // cursor stays visible.
+        // The AI button sits inside the box on the first row, right, as a
+        // filled pill (`✦ AI`, `■ Stop` while generating; just the glyph
+        // when narrow); the text gets the rest minus a one-column gap, on
+        // every row, scrolled so the cursor stays visible.
         let (glyph, word, action, bg) = if self.generating.is_some() {
             ("■", "Stop", Action::CancelCommitMessage, AI_STOP_BG)
         } else {
@@ -147,27 +287,50 @@ impl Component for CommitInput {
             inner.height.min(1),
         );
         let text_w = inner.width.saturating_sub(ai_w + 1);
-        let text_rect = Rect::new(inner.x, inner.y, text_w, inner.height.min(1));
+        let rows = inner.height as usize;
 
-        // Scroll in columns (wide chars take two) so the cursor cell stays
-        // inside the text area.
-        let message = self.message_text();
-        let cursor_col = text::width(&self.message[..self.cursor].iter().collect::<String>());
+        // Scroll rows so the cursor's line is shown, and columns (wide
+        // chars take two) so the cursor cell stays inside the text area.
+        let start = self.line_start(self.cursor);
+        let cursor_row = self.message[..start].iter().filter(|&&c| c == '\n').count();
+        if cursor_row < self.scroll_row {
+            self.scroll_row = cursor_row;
+        } else if rows > 0 && cursor_row >= self.scroll_row + rows {
+            self.scroll_row = cursor_row + 1 - rows;
+        }
+        self.scroll_row = self
+            .scroll_row
+            .min(self.line_count().saturating_sub(rows.max(1)));
+        let cursor_col = self.cols(start..self.cursor);
         let scroll = (cursor_col + 1).saturating_sub(text_w as usize);
-        let line = if self.message.is_empty() {
-            let placeholder = match (&self.generating, self.branch.is_empty()) {
-                (Some(provider), _) => format!("Generating with {provider}… (Esc to cancel)"),
-                (None, true) => "Message (Enter to commit)".to_string(),
-                (None, false) => format!("Message (Enter to commit on \"{}\")", self.branch),
+        if self.message.is_empty() {
+            let placeholder = match (&self.generating, self.amend, self.branch.is_empty()) {
+                (Some(provider), ..) => format!("Generating with {provider}… (Esc to cancel)"),
+                (None, true, _) => "Message (Enter to amend the last commit)".to_string(),
+                (None, false, true) => "Message (Enter to commit)".to_string(),
+                (None, false, false) => {
+                    format!("Message (Enter to commit on \"{}\")", self.branch)
+                }
             };
-            Line::from(Span::styled(
+            let line = Line::from(Span::styled(
                 placeholder,
                 Style::default().fg(Color::DarkGray),
-            ))
+            ));
+            let rect = Rect::new(inner.x, inner.y, text_w, inner.height.min(1));
+            f.render_widget(Paragraph::new(line), rect);
         } else {
-            Line::from(text::slice(&message, scroll, text_w as usize))
-        };
-        f.render_widget(Paragraph::new(line), text_rect);
+            let message = self.message_text();
+            for (i, line) in message
+                .split('\n')
+                .skip(self.scroll_row)
+                .take(rows)
+                .enumerate()
+            {
+                let rect = Rect::new(inner.x, inner.y + i as u16, text_w, 1);
+                let line = Line::from(text::slice(line, scroll, text_w as usize));
+                f.render_widget(Paragraph::new(line), rect);
+            }
+        }
 
         let style = Style::default()
             .fg(Color::White)
@@ -176,19 +339,29 @@ impl Component for CommitInput {
         f.render_widget(Span::styled(label, style), ai_rect);
         self.hitboxes.push(ai_rect, action);
 
-        // Full-width "✓ Commit" button; disabled (dim, not clickable) until
-        // there is a message.
-        let enabled = self.can_commit();
-        let label = "✓ Commit";
-        let label_w = label.chars().count() as u16;
-        let left = button_row.width.saturating_sub(label_w) / 2;
-        let right = button_row.width.saturating_sub(left + label_w);
-        let style = if enabled {
-            Style::default().fg(Color::White).bg(Color::Rgb(0, 95, 160))
+        // "✓ Commit" (or "✓ Amend") button, disabled (dim, not clickable)
+        // until there is a message, then the amend toggle — dropped when
+        // the row is too narrow (Ctrl-A still works).
+        let toggle_w = AMEND_LABEL.len() as u16;
+        let toggle_w = if button_row.width >= toggle_w + 12 {
+            toggle_w
         } else {
-            Style::default()
-                .fg(Color::Rgb(110, 120, 130))
-                .bg(Color::Rgb(40, 48, 58))
+            0
+        };
+        let commit_row = Rect::new(button_row.x, button_row.y, button_row.width - toggle_w, 1);
+        let enabled = self.can_commit();
+        let label = if self.amend {
+            "✓ Amend"
+        } else {
+            "✓ Commit"
+        };
+        let label_w = label.chars().count() as u16;
+        let left = commit_row.width.saturating_sub(label_w) / 2;
+        let right = commit_row.width.saturating_sub(left + label_w);
+        let style = match (enabled, self.amend) {
+            (true, false) => Style::default().fg(Color::White).bg(COMMIT_BG),
+            (true, true) => Style::default().fg(Color::White).bg(AMEND_BG),
+            (false, _) => Style::default().fg(DISABLED_FG).bg(DISABLED_BG),
         };
         let bar = format!(
             "{}{}{}",
@@ -196,14 +369,27 @@ impl Component for CommitInput {
             label,
             " ".repeat(right as usize)
         );
-        f.render_widget(Span::styled(bar, style), button_row);
+        f.render_widget(Span::styled(bar, style), commit_row);
         if enabled {
-            self.hitboxes
-                .push(button_row, Action::Commit(self.message_text()));
+            self.hitboxes.push(commit_row, self.commit_action());
+        }
+        if toggle_w > 0 {
+            let rect = Rect::new(commit_row.x + commit_row.width, button_row.y, toggle_w, 1);
+            let style = if self.amend {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(AMEND_BG)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DISABLED_FG).bg(TOGGLE_OFF_BG)
+            };
+            f.render_widget(Span::styled(AMEND_LABEL, style), rect);
+            self.hitboxes.push(rect, Action::ToggleAmend);
         }
 
-        if focused && text_w > 0 {
-            f.set_cursor_position((text_rect.x + (cursor_col - scroll) as u16, text_rect.y));
+        if focused && text_w > 0 && rows > 0 {
+            let y = inner.y + (cursor_row - self.scroll_row) as u16;
+            f.set_cursor_position((inner.x + (cursor_col - scroll) as u16, y));
         }
     }
 }
@@ -280,11 +466,12 @@ mod tests {
         type_str(&mut c, "  ");
         let term = draw(&mut c);
         let buf = term.backend().buffer();
-        for x in 0..60 {
-            assert_eq!(buf[(x, 3)].bg, Color::Rgb(40, 48, 58), "col {x}");
+        // Commit button cols 0..53, then the 7-col amend toggle.
+        for x in 0..53 {
+            assert_eq!(buf[(x, 3)].bg, DISABLED_BG, "col {x}");
         }
         assert!(c.handle_mouse(click(0, 3), area()).is_none());
-        assert!(c.handle_mouse(click(59, 3), area()).is_none());
+        assert!(c.handle_mouse(click(52, 3), area()).is_none());
         assert!(c
             .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
             .is_none());
@@ -296,13 +483,13 @@ mod tests {
         type_str(&mut c, "x");
         let term = draw(&mut c);
         let buf = term.backend().buffer();
-        for x in 0..60 {
-            assert_eq!(buf[(x, 3)].bg, Color::Rgb(0, 95, 160), "col {x}");
+        for x in 0..53 {
+            assert_eq!(buf[(x, 3)].bg, COMMIT_BG, "col {x}");
         }
-        for col in [0, 59] {
+        for col in [0, 52] {
             assert!(matches!(
                 c.handle_mouse(click(col, 3), area()),
-                Some(Action::Commit(m)) if m == "x"
+                Some(Action::Commit { message, amend: false }) if message == "x"
             ));
         }
     }
@@ -369,5 +556,159 @@ mod tests {
         let mut c = CommitInput::default();
         c.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
         assert_eq!(c.message_text(), "");
+    }
+
+    fn press(c: &mut CommitInput, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+        c.handle_key(KeyEvent::new(code, modifiers))
+    }
+
+    fn screen(c: &mut CommitInput, h: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(30, h)).unwrap();
+        term.draw(|f| c.render(f, f.area(), true)).unwrap();
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..h {
+            for x in 0..30 {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn ctrl_j_and_alt_enter_insert_newlines_and_the_box_grows() {
+        let mut c = CommitInput::default();
+        assert_eq!(c.preferred_height(), Some(4));
+        type_str(&mut c, "feat: x");
+        assert!(press(&mut c, KeyCode::Char('j'), KeyModifiers::CONTROL).is_none());
+        assert!(press(&mut c, KeyCode::Enter, KeyModifiers::ALT).is_none());
+        type_str(&mut c, "body");
+        assert_eq!(c.message_text(), "feat: x\n\nbody");
+        assert_eq!(c.preferred_height(), Some(6));
+        let s = screen(&mut c, 6);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[1].contains("feat: x"), "{s}");
+        assert!(lines[3].contains("body"), "{s}");
+        assert!(matches!(
+            press(&mut c, KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::Commit { message, amend: false }) if message == "feat: x\n\nbody"
+        ));
+    }
+
+    #[test]
+    fn up_down_home_end_move_by_line() {
+        let mut c = CommitInput::default();
+        type_str(&mut c, "abcdef");
+        press(&mut c, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        type_str(&mut c, "xy");
+        // Up from col 2 keeps col 2; Down clamps to the shorter line.
+        press(&mut c, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 2);
+        press(&mut c, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 6);
+        press(&mut c, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 9);
+        press(&mut c, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 7);
+        // Past the first/last line: the message start/end.
+        press(&mut c, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 9);
+        press(&mut c, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut c, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 0);
+    }
+
+    #[test]
+    fn up_down_keep_the_screen_column_across_wide_chars() {
+        let mut c = CommitInput::default();
+        type_str(&mut c, "日本語");
+        press(&mut c, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        type_str(&mut c, "abcd");
+        // Col 4 on "abcd" is after "日本" (2 chars, 4 columns).
+        press(&mut c, KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(c.cursor, 2);
+    }
+
+    #[test]
+    fn long_messages_stop_growing_and_scroll_to_the_cursor() {
+        let mut c = CommitInput::default();
+        for i in 0..10 {
+            if i > 0 {
+                press(&mut c, KeyCode::Char('j'), KeyModifiers::CONTROL);
+            }
+            type_str(&mut c, &format!("line{i}"));
+        }
+        assert_eq!(c.preferred_height(), Some(MAX_LINES as u16 + 3));
+        let s = screen(&mut c, 9);
+        assert!(s.contains("line9") && s.contains("line4"), "{s}");
+        assert!(!s.contains("line3"), "{s}");
+        for _ in 0..9 {
+            press(&mut c, KeyCode::Up, KeyModifiers::NONE);
+        }
+        let s = screen(&mut c, 9);
+        assert!(s.contains("line0") && s.contains("line5"), "{s}");
+        assert!(!s.contains("line6"), "{s}");
+    }
+
+    #[test]
+    fn amend_prefills_an_empty_box_and_drops_it_unedited() {
+        let mut c = CommitInput::default();
+        assert!(matches!(
+            press(&mut c, KeyCode::Char('a'), KeyModifiers::CONTROL),
+            Some(Action::ToggleAmend)
+        ));
+        assert!(matches!(
+            c.update(&Action::ToggleAmend),
+            Some(Action::LoadLastCommitMessage)
+        ));
+        c.update(&Action::LastCommitMessageLoaded(
+            "fix: y\n\nwhy".to_string(),
+        ));
+        assert_eq!(c.message_text(), "fix: y\n\nwhy");
+        let s = screen(&mut c, 6);
+        assert!(s.contains("✓ Amend") && s.contains("amend"), "{s}");
+        assert!(matches!(
+            press(&mut c, KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::Commit { amend: true, .. })
+        ));
+        // Off again, untouched: the loaded message goes away.
+        c.update(&Action::ToggleAmend);
+        assert_eq!(c.message_text(), "");
+        assert!(screen(&mut c, 4).contains("✓ Commit"));
+    }
+
+    #[test]
+    fn amend_keeps_a_typed_or_edited_message() {
+        let mut c = CommitInput::default();
+        type_str(&mut c, "mine");
+        // Something typed already: nothing to load, and it stays.
+        assert!(c.update(&Action::ToggleAmend).is_none());
+        c.update(&Action::LastCommitMessageLoaded("theirs".to_string()));
+        assert_eq!(c.message_text(), "mine");
+        c.update(&Action::ToggleAmend);
+        assert_eq!(c.message_text(), "mine");
+        // Loaded then edited: kept on toggle-off too.
+        let mut c = CommitInput::default();
+        c.update(&Action::ToggleAmend);
+        c.update(&Action::LastCommitMessageLoaded("fix".to_string()));
+        type_str(&mut c, "ed");
+        c.update(&Action::ToggleAmend);
+        assert_eq!(c.message_text(), "fixed");
+    }
+
+    #[test]
+    fn toggle_click_and_commit_done_reset_amend() {
+        let mut c = CommitInput::default();
+        draw(&mut c);
+        // The toggle is the last 7 columns of the button row.
+        assert!(matches!(
+            c.handle_mouse(click(55, 3), area()),
+            Some(Action::ToggleAmend)
+        ));
+        c.update(&Action::ToggleAmend);
+        assert!(c.amend);
+        c.update(&Action::CommitDone);
+        assert!(!c.amend && c.message.is_empty());
     }
 }
