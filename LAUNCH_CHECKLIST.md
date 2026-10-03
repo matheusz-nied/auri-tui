@@ -35,7 +35,7 @@ concluir. O passo a passo de cada release está em [RELEASING.md](RELEASING.md).
   ```sh
   git tag v0.1.0 && git push --tags
   ```
-- [ ] **Publicar no crates.io** depois que a release sair (`cargo install
+- [x] **Publicar no crates.io** (2026-10-03) depois que a release sair (`cargo install
   auri-tui` só funciona depois disso).
   ```sh
   cargo login      # uma vez, com token do crates.io
