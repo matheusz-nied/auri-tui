@@ -29,7 +29,7 @@ concluir. O passo a passo de cada release está em [RELEASING.md](RELEASING.md).
 - [x] **Datar a versão no `CHANGELOG.md`.** Trocar
   `## [0.1.0] - Unreleased` pela data do lançamento (ex.:
   `## [0.1.0] - 2026-09-30`). O dist usa essa seção como nota da release.
-- [ ] **Criar e enviar a tag `v0.1.0`.** Dispara o workflow `Release`, que
+- [x] **Criar e enviar a tag `v0.1.0`.** Dispara o workflow `Release`, que
   gera os binários e a release no GitHub. Até lá, o instalador anunciado no
   README e na landing page responde 404.
   ```sh
@@ -41,7 +41,7 @@ concluir. O passo a passo de cada release está em [RELEASING.md](RELEASING.md).
   cargo login      # uma vez, com token do crates.io
   cargo publish
   ```
-- [ ] **Smoke test do instalador** numa máquina limpa:
+- [x] **Smoke test do instalador** (macOS arm64, 2026-10-03) numa máquina limpa:
   ```sh
   curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh
   auri --version
