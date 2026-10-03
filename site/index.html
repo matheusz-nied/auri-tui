@@ -204,6 +204,10 @@
   .cap kbd { margin: 0 2px; }
 
   /* facts */
+  .rec { margin: 72px 0 0; }
+  .rec img { display: block; width: 100%; height: auto; aspect-ratio: 1400 / 800; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 6px; box-shadow: 0 30px 80px -30px rgba(0,0,0,.8); }
+  .rec .label a { color: inherit; text-decoration: none; transition: color .2s; }
+  .rec .label a:hover { color: var(--gold); }
   .facts { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 96px; border-block: 1px solid var(--line); }
   .facts div { padding: 22px 24px; }
   .facts div + div { border-left: 1px solid var(--line); }
@@ -446,6 +450,17 @@
       </div>
       <p class="cap" id="cap"></p>
     </div>
+
+    <figure class="rec rv">
+      <div class="demo-head">
+        <span class="label" data-i18n="rec.fig"><b>Fig. 2</b> &nbsp;·&nbsp; the real thing, recorded</span>
+        <span class="label"><a href="demo.gif" data-i18n="rec.open">Open full size ↗</a></span>
+      </div>
+      <!-- Pages copies demo/demo.gif next to this file; the fallback is for opening site/ locally. -->
+      <img src="demo.gif" width="1400" height="800" loading="lazy" decoding="async"
+           alt="auri in a terminal: browsing the file tree, opening a side-by-side diff, staging changes, writing a multi-line commit and opening the history."
+           onerror="this.onerror=null;this.src='../demo/demo.gif'">
+    </figure>
 
     <div class="facts rv">
       <div><span class="label" data-i18n="facts.written">Written in</span><strong>Rust · ratatui</strong></div>
@@ -715,6 +730,8 @@
  "art.cap": "<b>Albireo.</b><span>Num telescópio pequeno, uma estrela vira duas — uma dourada e uma azul, orbitando lado a lado.</span>",
  "demo.fig": "<b>Fig. 1</b> &nbsp;·&nbsp; auri, em execução",
  "demo.hint": "Clique nele. É real o bastante.",
+ "rec.fig": "<b>Fig. 2</b> &nbsp;·&nbsp; o de verdade, gravado",
+ "rec.open": "Ver em tamanho real ↗",
  "demo.reset": "↻ reiniciar",
  "facts.written": "Escrito em",
  "facts.platforms": "Plataformas",
