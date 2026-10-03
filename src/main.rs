@@ -57,11 +57,14 @@ fn main() -> Result<()> {
         Some(path) => Box::new(FileStore::new(path)),
         None => Box::new(MemoryStore::new(None)),
     };
+    // Two stateless git backends: one for the worker thread (status,
+    // diffs, staging…), one for the few calls the UI thread makes itself.
     let mut app = App::new(
         Box::new(CliGit::new(root.clone())),
-        Box::new(LocalFs::new(root)),
+        Box::new(LocalFs::new(root.clone())),
         store,
     )
+    .with_git_worker(Box::new(CliGit::new(root)))
     .with_terminal_handoff(Box::new(Crossterm))
     .with_editor(Box::new(ShellEditor));
     let result = app.run(&mut terminal);

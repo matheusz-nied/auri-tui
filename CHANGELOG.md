@@ -27,6 +27,8 @@ First public release.
 - Resizable, collapsible sidebar; layout and settings persisted in
   `~/.config/auri/preferences.toml`.
 - Mouse support: clickable buttons, tabs and draggable dividers.
+- Git runs on a background thread: the UI stays responsive while large
+  diffs load or a slow repo refreshes.
 - Bracketed paste: pasted text keeps its line breaks and never commits.
 - `--help` and `--version`.
 

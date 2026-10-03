@@ -47,7 +47,7 @@ fn big_doc(rows: usize) -> DiffDoc {
 #[ignore]
 fn bench_diffview_render() {
     let mut v = DiffView::default();
-    v.update(&Action::DiffLoaded(big_doc(3000)));
+    v.update(&Action::DiffLoaded(big_doc(3000).into()));
     let mut term = Terminal::new(TestBackend::new(250, 90)).unwrap();
     let area = Rect::new(0, 0, 250, 90);
     term.draw(|f| v.render(f, area, true)).unwrap();

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -22,7 +24,8 @@ const FILLER_BG: Color = Color::Rgb(30, 30, 30);
 /// gutter plus syntax-highlighted text; removed cells get a red background,
 /// added cells green, and empty filler cells are hatched.
 pub struct DiffView {
-    doc: Option<DiffDoc>,
+    /// Shared with `App` (it compares reloads against it), never copied.
+    doc: Option<Arc<DiffDoc>>,
     /// One highlighter per side: the old side's cells in order are the old
     /// file (diffs have full context), the new side's the new file.
     highlighters: [Highlighter; 2],
@@ -82,7 +85,7 @@ impl DiffView {
 
     /// `fresh` = a newly selected file: scroll resets to the first changed
     /// block. A reload of the same file keeps the scroll position (clamped).
-    fn set_doc(&mut self, doc: DiffDoc, fresh: bool) {
+    fn set_doc(&mut self, doc: Arc<DiffDoc>, fresh: bool) {
         self.max_width = doc
             .rows
             .iter()
@@ -358,8 +361,13 @@ impl Component for DiffView {
         }
 
         let Some(doc) = &self.doc else {
-            let hint = Paragraph::new("Select a file to view its diff")
-                .style(Style::default().fg(Color::DarkGray));
+            // A selected file whose diff the git worker is still loading.
+            let text = if self.source.is_some() {
+                "Loading…"
+            } else {
+                "Select a file to view its diff"
+            };
+            let hint = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
             f.render_widget(hint, centered_hint(inner));
             return;
         };
@@ -491,7 +499,7 @@ mod tests {
         };
 
         v.update(&Action::SelectFile(file()));
-        v.update(&Action::DiffLoaded(doc(20)));
+        v.update(&Action::DiffLoaded(doc(20).into()));
         // Fresh load lands on the first changed block.
         assert_eq!(v.scroll_y, 0);
 
@@ -501,17 +509,17 @@ mod tests {
 
         // A reload of the same file keeps the position (clamped to a
         // shorter doc here: 12 rows - 5 visible = max scroll 7).
-        v.update(&Action::DiffReloaded(doc(12)));
+        v.update(&Action::DiffReloaded(doc(12).into()));
         assert_eq!(v.scroll_y, 7);
         assert_eq!(v.scroll_x, 8);
 
         // Shorter still: clamps to the bottom.
-        v.update(&Action::DiffReloaded(doc(8)));
+        v.update(&Action::DiffReloaded(doc(8).into()));
         assert_eq!(v.scroll_y, 3);
 
         // A new file resets to the first change again.
         v.update(&Action::SelectFile(file()));
-        v.update(&Action::DiffLoaded(doc(20)));
+        v.update(&Action::DiffLoaded(doc(20).into()));
         assert_eq!(v.scroll_y, 0);
         assert_eq!(v.scroll_x, 0);
     }
@@ -530,7 +538,7 @@ mod tests {
             row.right = cell(1, CellKind::Added);
         }
         v.update(&Action::SelectFile(file()));
-        v.update(&Action::DiffLoaded(d));
+        v.update(&Action::DiffLoaded(d.into()));
 
         // Render once so toolbar hitboxes exist (40-wide terminal).
         let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
@@ -559,15 +567,18 @@ mod tests {
                 kind,
             })
         };
-        v.update(&Action::DiffLoaded(DiffDoc {
-            path: "f.rs".to_string(),
-            rows: vec![DiffRow {
-                left: cell("let a = 1;", CellKind::Removed),
-                right: cell("fn b() {}", CellKind::Added),
-                kind: RowKind::Changed,
-            }],
-            binary: false,
-        }));
+        v.update(&Action::DiffLoaded(
+            DiffDoc {
+                path: "f.rs".to_string(),
+                rows: vec![DiffRow {
+                    left: cell("let a = 1;", CellKind::Removed),
+                    right: cell("fn b() {}", CellKind::Added),
+                    kind: RowKind::Changed,
+                }],
+                binary: false,
+            }
+            .into(),
+        ));
         let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
         term.draw(|f| v.render(f, f.area(), true)).unwrap();
         let buf = term.backend().buffer();
@@ -602,7 +613,7 @@ mod tests {
         let mut v = DiffView::default();
         // Working-file diff vanishes from status -> cleared.
         v.update(&Action::SelectFile(file()));
-        v.update(&Action::DiffLoaded(doc(5)));
+        v.update(&Action::DiffLoaded(doc(5).into()));
         v.update(&Action::StatusLoaded(vec![]));
         assert!(v.doc.is_none());
         assert!(v.source.is_none());
@@ -613,7 +624,7 @@ mod tests {
             commit: c,
             file: cf,
         });
-        v.update(&Action::DiffLoaded(doc(5)));
+        v.update(&Action::DiffLoaded(doc(5).into()));
         v.update(&Action::StatusLoaded(vec![]));
         assert!(v.doc.is_some());
         assert!(matches!(v.source, Some(DiffSource::Commit { .. })));
@@ -632,7 +643,7 @@ mod tests {
         d.rows[7].kind = RowKind::Changed;
         d.rows[12].right = None;
         v.update(&Action::SelectFile(file()));
-        v.update(&Action::DiffLoaded(d));
+        v.update(&Action::DiffLoaded(d.into()));
         let edit_line = |v: &mut DiffView, scroll| {
             v.scroll_y = scroll;
             match v.handle_key(key('o')) {
@@ -651,7 +662,7 @@ mod tests {
             commit: c,
             file: cf,
         });
-        v.update(&Action::DiffLoaded(doc(20)));
+        v.update(&Action::DiffLoaded(doc(20).into()));
         assert!(matches!(
             v.handle_key(key('o')),
             Some(Action::OpenInEditor { path, line: None }) if path == "f.rs"

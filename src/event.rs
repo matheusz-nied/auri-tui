@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
 
-/// How long `poll` waits for input before giving up.
-const POLL_TIMEOUT: Duration = Duration::from_millis(250);
+/// How long `poll_event` waits for input when nothing else is going on.
+pub const POLL_TIMEOUT: Duration = Duration::from_millis(250);
 /// How often a `Tick` is emitted (drives `Action::Refresh` in `App`).
 const TICK_RATE: Duration = Duration::from_secs(2);
 /// Max events `drain` reads per frame — a bound so an endless input stream
@@ -30,12 +30,12 @@ pub struct Events {
 }
 
 impl Events {
-    /// Wait up to `POLL_TIMEOUT` for the next event. Returns `Ok(None)` on a
+    /// Wait up to `timeout` for the next event. Returns `Ok(None)` on a
     /// plain timeout so the caller can redraw; key-release events (sent by some
     /// terminals/platforms) are filtered out.
-    pub fn poll_event(&mut self) -> Result<Option<AppEvent>> {
+    pub fn poll_event(&mut self, timeout: Duration) -> Result<Option<AppEvent>> {
         loop {
-            if event::poll(POLL_TIMEOUT)? {
+            if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(key) if key.kind != KeyEventKind::Release => {
                         return Ok(Some(AppEvent::Key(key)));

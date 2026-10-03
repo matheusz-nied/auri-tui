@@ -57,8 +57,6 @@ concluir. O passo a passo de cada release está em [RELEASING.md](RELEASING.md).
 - [ ] **Mostrar o GIF na landing page.** O workflow de Pages já copia
   `demo/demo.gif` para o site, mas `site/index.html` não usa nenhuma imagem.
 - [ ] **Documentar limitações conhecidas** no README, ou resolver na 0.2:
-  - o git roda na thread da interface (item 10 do BACKLOG): em repos muito
-    grandes a UI pode travar por um instante a cada refresh (~2 s);
   - durante um merge em que todas as resoluções ficam iguais ao último
     commit, não sobra nada staged e o commit é bloqueado com
     "Nothing staged", embora um commit de merge fosse válido;

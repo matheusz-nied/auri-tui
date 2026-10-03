@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,13 +20,14 @@ use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
 use crate::components::file_tree::FileTree;
 use crate::components::file_view::FileView;
-use crate::components::history::{History, HISTORY_PAGE};
+use crate::components::history::History;
 use crate::components::hitbox::Hitboxes;
 use crate::components::view_tabs;
 use crate::editor::EditorLauncher;
 use crate::event::{AppEvent, Events};
 use crate::fs::{FileStamp, FsBackend};
-use crate::git::{DiffSource, GitBackend, Section};
+use crate::git::{DiffDoc, DiffSource, GitBackend};
+use crate::git_worker::{self, Done, GitJob, GitJobs, GitResult};
 use crate::layout::{self, Sidebar, SidebarView};
 use crate::prefs::{Preferences, PrefsStore};
 
@@ -66,13 +68,19 @@ impl EditorLauncher for NoEditor {
 }
 
 /// Owns the components, the focus state, the last-frame layout rects and the
-/// action queue. It is the *only* place where `GitBackend` and `FsBackend`
-/// are called: side effects requested by components (`Refresh`,
-/// `ToggleStage`, `Commit`, `SelectFile`, `LoadDirs`, `OpenFile`) are
-/// executed here and their results are broadcast back to all components as
-/// new actions.
+/// action queue. It is the *only* place where git and `FsBackend` are
+/// used: side effects requested by components (`Refresh`, `ToggleStage`,
+/// `Commit`, `SelectFile`, `LoadDirs`, `OpenFile`) are executed here — git
+/// ones as `GitJob`s on the worker — and their results are broadcast back
+/// to all components as new actions.
 pub struct App {
-    git: Box<dyn GitBackend>,
+    /// Git jobs (worker thread, or inline in tests) plus the UI thread's
+    /// own backend for the few synchronous calls.
+    git: GitJobs,
+    /// A `GitJob::Refresh` is running; another `Refresh` only sets
+    /// `refresh_again`, so refreshes never pile up behind a slow repo.
+    refresh_in_flight: bool,
+    refresh_again: bool,
     /// Workspace reads for the explorer and the file viewer.
     fs: Box<dyn FsBackend>,
     /// Background AI commit-message generation; polled once per loop.
@@ -118,9 +126,9 @@ pub struct App {
     last_head: Option<String>,
     /// Whether `head()` has been fetched at least once.
     seen_head: bool,
-    /// Last diff doc broadcast to components — compared against fresh loads so
+    /// Last diff doc broadcast to components — compared against reloads so
     /// unchanged diffs aren't re-sent on every refresh tick.
-    last_diff: Option<crate::git::DiffDoc>,
+    last_diff: Option<Arc<DiffDoc>>,
     /// Loaded preferences; `App` is the only writer (via `sync_prefs`).
     prefs: Preferences,
     /// Where prefs are persisted.
@@ -155,9 +163,14 @@ where
 }
 
 /// How long after the last input event a `Tick` may trigger `Action::Refresh`.
-/// During an input burst (trackpad scroll = dozens of events) the synchronous
-/// git calls must not interleave with event handling.
+/// During an input burst (trackpad scroll = dozens of events) a refresh
+/// would only rebuild the lists under the user's fingers.
 const REFRESH_IDLE: Duration = Duration::from_secs(1);
+
+/// How long the loop waits for input while git or AI work is in flight —
+/// short, so finished work is shown promptly. Idle, it waits
+/// `event::POLL_TIMEOUT`.
+const BUSY_POLL: Duration = Duration::from_millis(16);
 
 /// How long an info message stays in the status bar.
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
@@ -182,7 +195,9 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let mut app = Self {
-            git,
+            git: GitJobs::inline(git),
+            refresh_in_flight: false,
+            refresh_again: false,
             fs,
             ai: Box::new(ProcessRunner::default()),
             terminal: Box::new(NoHandoff),
@@ -257,6 +272,13 @@ impl App {
         self
     }
 
+    /// Run git jobs on a worker thread that owns `worker`, a second backend
+    /// for the same repo (the default runs them inline — fine for tests).
+    pub fn with_git_worker(mut self, worker: Box<dyn GitBackend + Send>) -> Self {
+        self.git.spawn_worker(worker);
+        self
+    }
+
     /// Test hook: swap in a fake AI runner.
     pub fn with_ai_runner(mut self, r: Box<dyn AiRunner>) -> Self {
         self.ai = r;
@@ -266,7 +288,12 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.enqueue(Action::Refresh);
         while self.running {
-            if let Some(ev) = self.events.poll_event()? {
+            let timeout = if self.git.busy() || self.ai.is_running() {
+                BUSY_POLL
+            } else {
+                crate::event::POLL_TIMEOUT
+            };
+            if let Some(ev) = self.events.poll_event(timeout)? {
                 self.handle_event(ev);
                 // A burst (trackpad scroll, held key) queues many events:
                 // handle them all, then draw once — not one render each.
@@ -326,24 +353,91 @@ impl App {
 
     /// Drain the queue: broadcast every action to all components (`update`)
     /// and execute the side-effecting ones locally. Actions emitted along the
-    /// way are processed in order. Any processed action marks the frame dirty.
+    /// way are processed in order; finished git jobs are taken in between
+    /// (inline jobs finish at once, so tests see the whole cascade). Any
+    /// processed action marks the frame dirty.
     fn dispatch(&mut self) {
-        if self.queue.is_empty() {
-            return;
+        loop {
+            for done in self.git.poll() {
+                self.accept(done);
+            }
+            if self.queue.is_empty() {
+                return;
+            }
+            self.dirty = true;
+            while let Some(action) = self.queue.pop_front() {
+                for (_, comp) in &mut self.components {
+                    if let Some(next) = comp.update(&action) {
+                        self.queue.push_back(next);
+                    }
+                }
+                for overlay in &mut self.overlays {
+                    if let Some(next) = overlay.update(&action) {
+                        self.queue.push_back(next);
+                    }
+                }
+                self.execute(action);
+            }
         }
-        self.dirty = true;
-        while let Some(action) = self.queue.pop_front() {
-            for (_, comp) in &mut self.components {
-                if let Some(next) = comp.update(&action) {
-                    self.queue.push_back(next);
+    }
+
+    /// Take in a finished git job: its actions are queued; a diff only if
+    /// the pane still shows its source (a newer selection made it stale)
+    /// and, for a reload, only if it changed; HEAD reloads history when it
+    /// moved.
+    fn accept(&mut self, done: Done) {
+        for result in done.results {
+            match result {
+                GitResult::Action(action) => self.enqueue(action),
+                GitResult::Head(head) => {
+                    // History reloads only when HEAD moved (new commit,
+                    // rebase, checkout...) — not on every tick.
+                    if !self.seen_head || self.last_head != head {
+                        self.seen_head = true;
+                        self.last_head = head;
+                        self.git.submit(GitJob::History { skip: 0 });
+                    }
+                }
+                GitResult::Diff { source, doc, fresh } => {
+                    if self.diff.as_ref() != Some(&source)
+                        || (!fresh && self.last_diff.as_ref() == Some(&doc))
+                    {
+                        continue;
+                    }
+                    self.last_diff = Some(Arc::clone(&doc));
+                    self.enqueue(if fresh {
+                        Action::DiffLoaded(doc)
+                    } else {
+                        Action::DiffReloaded(doc)
+                    });
                 }
             }
-            for overlay in &mut self.overlays {
-                if let Some(next) = overlay.update(&action) {
-                    self.queue.push_back(next);
-                }
+        }
+        if done.job == GitJob::Refresh {
+            self.refresh_in_flight = false;
+            if std::mem::take(&mut self.refresh_again) {
+                self.request_refresh();
             }
-            self.execute(action);
+        }
+    }
+
+    /// Start a git refresh, or — while one runs — one more right after it
+    /// (what changed meanwhile must show up).
+    fn request_refresh(&mut self) {
+        if self.refresh_in_flight {
+            self.refresh_again = true;
+        } else {
+            self.refresh_in_flight = true;
+            self.git.submit(GitJob::Refresh);
+        }
+    }
+
+    /// Block until every submitted git job has finished and take their
+    /// results — before a synchronous git call that must see them (a
+    /// stage right before a commit).
+    fn finish_git_jobs(&mut self) {
+        for done in self.git.wait_idle() {
+            self.accept(done);
         }
     }
 
@@ -359,64 +453,20 @@ impl App {
                 }
             }
             Action::Refresh => {
-                match self.git.status() {
-                    Ok(files) => self.enqueue(Action::StatusLoaded(files)),
-                    Err(e) => self.enqueue(Action::Error(format!("status: {e}"))),
-                }
-                match self.git.branch() {
-                    Ok(b) => self.enqueue(Action::BranchLoaded(b)),
-                    Err(e) => self.enqueue(Action::Error(format!("branch: {e}"))),
-                }
-                // History reloads only when HEAD moved (new commit, rebase,
-                // checkout...) — not on every tick.
-                match self.git.head() {
-                    Ok(head) if !self.seen_head || self.last_head != head => {
-                        self.seen_head = true;
-                        self.last_head = head;
-                        self.enqueue(Action::LoadHistory { skip: 0 });
-                    }
-                    Ok(_) => {}
-                    Err(e) => self.enqueue(Action::Error(format!("head: {e}"))),
-                }
+                self.request_refresh();
                 self.reload_open_file();
             }
             Action::StatusLoaded(files) => {
-                // The broadcast above ran first, so if `Changes` had to move
-                // the selection (file committed/moved/first load) its
-                // SelectFile is already queued — that action loads the new
-                // file's diff, so reloading the old one would be stale work.
-                let select_queued = self
-                    .queue
-                    .iter()
-                    .any(|a| matches!(a, Action::SelectFile(_) | Action::SelectCommitFile { .. }));
                 self.last_status = files;
-                if !select_queued {
-                    self.reload_selected_diff();
-                }
+                // If `Changes` moved the selection meanwhile, the reload's
+                // result is simply dropped as stale (see `accept`).
+                self.reload_selected_diff();
             }
-            Action::SelectFile(file) => {
-                self.diff = Some(DiffSource::Working(file.clone()));
-                match self.git.diff(&file) {
-                    Ok(doc) => {
-                        self.last_diff = Some(doc.clone());
-                        self.enqueue(Action::DiffLoaded(doc));
-                    }
-                    Err(e) => self.enqueue(Action::Error(format!("diff: {e}"))),
-                }
-            }
-            Action::SelectCommitFile { commit, file } => {
-                self.diff = Some(DiffSource::Commit {
-                    hash: commit.hash.clone(),
-                    file: file.clone(),
-                });
-                match self.git.commit_diff(&commit.hash, &file) {
-                    Ok(doc) => {
-                        self.last_diff = Some(doc.clone());
-                        self.enqueue(Action::DiffLoaded(doc));
-                    }
-                    Err(e) => self.enqueue(Action::Error(format!("diff: {e}"))),
-                }
-            }
+            Action::SelectFile(file) => self.load_diff(DiffSource::Working(file)),
+            Action::SelectCommitFile { commit, file } => self.load_diff(DiffSource::Commit {
+                hash: commit.hash,
+                file,
+            }),
             Action::SetSidebarView(view) => self.set_view(view),
             Action::LoadDirs(dirs) => {
                 for dir in dirs {
@@ -441,70 +491,17 @@ impl App {
                 }
             }
             Action::OpenInEditor { path, line } => self.open_in_editor(&path, line),
-            Action::LoadHistory { skip } => match self.git.log(skip, HISTORY_PAGE) {
-                Ok(commits) => self.enqueue(Action::HistoryLoaded { skip, commits }),
-                Err(e) => self.enqueue(Action::Error(format!("log: {e}"))),
-            },
-            Action::LoadCommitFiles(hash) => match self.git.commit_files(&hash) {
-                Ok(files) => self.enqueue(Action::CommitFilesLoaded { hash, files }),
-                Err(e) => self.enqueue(Action::Error(format!("commit files: {e}"))),
-            },
-            Action::ToggleStage(file) => {
-                let result = if file.section == Section::Staged {
-                    self.git.unstage(&file.path)
-                } else {
-                    self.git.stage(&file.path)
-                };
-                match result {
-                    // Changes re-selects the file in its new section on the
-                    // next StatusLoaded, which emits a fresh SelectFile.
-                    Ok(()) => self.enqueue(Action::Refresh),
-                    Err(e) => self.enqueue(Action::Error(format!("stage: {e}"))),
-                }
+            Action::LoadHistory { skip } => self.git.submit(GitJob::History { skip }),
+            Action::LoadCommitFiles(hash) => self.git.submit(GitJob::CommitFiles(hash)),
+            Action::ToggleStage(file) => self.git.submit(GitJob::ToggleStage(file)),
+            Action::StageAll => self.git.submit(GitJob::StageAll),
+            Action::UnstageAll => self.git.submit(GitJob::UnstageAll),
+            Action::Discard(file) => self.git.submit(GitJob::Discard(file)),
+            Action::Commit { message, amend } => self.commit(message, amend),
+            Action::CommitDone { amended } => {
+                self.notify(if amended { "Amended" } else { "Committed" }, false);
             }
-            Action::StageAll => match self.git.stage_all() {
-                Ok(()) => self.enqueue(Action::Refresh),
-                Err(e) => self.enqueue(Action::Error(format!("stage: {e}"))),
-            },
-            Action::UnstageAll => match self.git.unstage_all() {
-                Ok(()) => self.enqueue(Action::Refresh),
-                Err(e) => self.enqueue(Action::Error(format!("unstage: {e}"))),
-            },
-            Action::Discard(file) => match self.git.discard(&file) {
-                Ok(()) => self.enqueue(Action::Refresh),
-                Err(e) => self.enqueue(Action::Error(format!("discard: {e}"))),
-            },
-            Action::Commit { message, amend } => {
-                let staged = self
-                    .last_status
-                    .iter()
-                    .any(|f| f.section == Section::Staged);
-                if !staged && !amend {
-                    self.enqueue(Action::Error("Nothing staged".to_string()));
-                } else {
-                    let handoff = self.git.commit_may_prompt();
-                    if handoff {
-                        self.terminal.release();
-                    }
-                    let result = self.git.commit(&message, amend);
-                    if handoff {
-                        self.terminal.reclaim();
-                        self.needs_clear = true;
-                    }
-                    match result {
-                        Ok(()) => {
-                            self.notify(if amend { "Amended" } else { "Committed" }, false);
-                            self.enqueue(Action::CommitDone);
-                            self.enqueue(Action::Refresh);
-                        }
-                        Err(e) => self.enqueue(Action::Error(format!("commit: {e}"))),
-                    }
-                }
-            }
-            Action::LoadLastCommitMessage => match self.git.last_commit_message() {
-                Ok(message) => self.enqueue(Action::LastCommitMessageLoaded(message)),
-                Err(e) => self.enqueue(Action::Error(format!("amend: {e}"))),
-            },
+            Action::LoadLastCommitMessage => self.git.submit(GitJob::LastCommitMessage),
             Action::GenerateCommitMessage => self.start_ai_generation(),
             Action::CancelCommitMessage => self.ai.cancel(),
             Action::ToggleAiProvider => self.toggle_ai_provider(),
@@ -525,7 +522,6 @@ impl App {
             | Action::CommitMessageGenerating { .. }
             | Action::CommitMessageGenerated(_)
             | Action::CommitMessageFailed
-            | Action::CommitDone
             | Action::ToggleAmend
             | Action::LastCommitMessageLoaded(_)
             | Action::DirLoaded { .. }
@@ -609,17 +605,16 @@ impl App {
         if self.ai.is_running() {
             return;
         }
-        let staged = self
-            .last_status
-            .iter()
-            .any(|f| f.section == Section::Staged);
-        if !staged {
-            self.enqueue(Action::Error("Nothing staged".to_string()));
+        // The prompt is the staged patch: it must include a stage queued
+        // just before.
+        self.finish_git_jobs();
+        let git = self.git.backend();
+        if let Err(e) = git_worker::check_staged(git, false) {
+            self.enqueue(Action::Error(e));
             return;
         }
-        let prompt = match self.git.staged_patch().and_then(|(stat, diff)| {
-            let subjects = self
-                .git
+        let prompt = match git.staged_patch().and_then(|(stat, diff)| {
+            let subjects = git
                 .log(0, 10)?
                 .into_iter()
                 .map(|c| c.subject)
@@ -637,7 +632,7 @@ impl App {
                 return;
             }
         };
-        let cmd = ai::command(&self.prefs.ai, &self.git.root());
+        let cmd = ai::command(&self.prefs.ai, &self.git.backend().root());
         match self.ai.start(cmd, prompt) {
             Ok(()) => {
                 let provider = self.ai_provider_label();
@@ -689,7 +684,7 @@ impl App {
                 return;
             }
         }
-        let abs = self.git.root().join(path);
+        let abs = self.git.backend().root().join(path);
         self.terminal.release();
         let result = self.editor.open(&abs.to_string_lossy(), line);
         self.terminal.reclaim();
@@ -701,9 +696,19 @@ impl App {
         self.enqueue(Action::Refresh);
     }
 
+    /// Point the diff pane at `source` and load it. Until it arrives the
+    /// pane shows "Loading…"; a result for an older source is dropped.
+    fn load_diff(&mut self, source: DiffSource) {
+        self.diff = Some(source.clone());
+        self.git.submit(GitJob::Diff {
+            source,
+            fresh: true,
+        });
+    }
+
     /// Reload the diff of the currently selected file, if it still exists in
-    /// `last_status`. Broadcasts `DiffReloaded` only when the doc changed.
-    /// Commit diffs are immutable — never reloaded.
+    /// `last_status`. `accept` broadcasts `DiffReloaded` only when the doc
+    /// changed. Commit diffs are immutable — never reloaded.
     fn reload_selected_diff(&mut self) {
         let Some(DiffSource::Working(sel)) = &self.diff else {
             return;
@@ -712,17 +717,38 @@ impl App {
             .last_status
             .iter()
             .any(|f| f.path == sel.path && f.section == sel.section);
-        if !still_there {
+        if still_there {
+            let source = DiffSource::Working(sel.clone());
+            self.git.submit(GitJob::Diff {
+                source,
+                fresh: false,
+            });
+        }
+    }
+
+    /// `Commit`: on the worker, unless it may prompt (GPG pinentry, an
+    /// interactive hook). Then it runs here, after every queued job (a
+    /// stage pressed just before must be in), with the terminal handed
+    /// over — the UI waits for it, as the user is busy at the prompt.
+    fn commit(&mut self, message: String, amend: bool) {
+        if !self.git.backend().commit_may_prompt() {
+            self.git.submit(GitJob::Commit { message, amend });
             return;
         }
-        match self.git.diff(sel) {
-            Ok(doc) if self.last_diff.as_ref() != Some(&doc) => {
-                self.last_diff = Some(doc.clone());
-                self.enqueue(Action::DiffReloaded(doc));
-            }
-            Ok(_) => {}
-            Err(e) => self.enqueue(Action::Error(format!("diff: {e}"))),
+        self.finish_git_jobs();
+        let git = self.git.backend();
+        if let Err(e) = git_worker::check_staged(git, amend) {
+            self.enqueue(Action::Error(e));
+            return;
         }
+        self.terminal.release();
+        let result = self.git.backend().commit(&message, amend);
+        self.terminal.reclaim();
+        self.needs_clear = true;
+        self.accept(Done {
+            job: GitJob::Commit { message, amend },
+            results: git_worker::commit_results(result, amend),
+        });
     }
 
     /// Re-read the open file when its stamp changed on disk. A deleted
@@ -1123,7 +1149,7 @@ mod tests {
     use super::*;
     use crate::ai::{AiCommand, AiRunner};
     use crate::fs::{DirEntry, EntryKind, FileDoc};
-    use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
+    use crate::git::{Commit, CommitFile, DiffDoc, FileChange, Section};
     use crate::prefs::{FileStore, LayoutPrefs, MemoryStore};
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
@@ -1138,6 +1164,10 @@ mod tests {
         prompting: Option<CallLog>,
         /// Every commit made.
         commits: Commits,
+        /// What `status` reports.
+        status: Vec<FileChange>,
+        /// How many times `status` ran.
+        status_calls: Rc<std::cell::Cell<usize>>,
     }
 
     type CallLog = Rc<RefCell<Vec<&'static str>>>;
@@ -1161,7 +1191,8 @@ mod tests {
             PathBuf::from("/repo")
         }
         fn status(&self) -> Result<Vec<FileChange>> {
-            Ok(vec![])
+            self.status_calls.set(self.status_calls.get() + 1);
+            Ok(self.status.clone())
         }
         fn diff(&self, _file: &FileChange) -> Result<DiffDoc> {
             Ok(DiffDoc {
@@ -1331,6 +1362,14 @@ mod tests {
         }
     }
 
+    fn git_app(git: FakeGit) -> App {
+        App::new(
+            Box::new(git),
+            Box::new(FakeFs::default()),
+            Box::new(MemoryStore::new(None)),
+        )
+    }
+
     fn app(store: MemoryStore) -> App {
         App::new(
             Box::new(FakeGit::default()),
@@ -1492,12 +1531,13 @@ mod tests {
     /// An App with a FakeRunner and, when `staged`, a staged change loaded.
     fn ai_app(staged: bool) -> (App, FakeRunner) {
         let runner = FakeRunner::default();
-        let mut app = app(MemoryStore::new(None)).with_ai_runner(Box::new(runner.clone()));
-        app.dispatch(); // flush the startup queue
-        if staged {
-            app.enqueue(Action::StatusLoaded(vec![staged_file()]));
-            app.dispatch();
-        }
+        let git = FakeGit {
+            status: if staged { vec![staged_file()] } else { vec![] },
+            ..FakeGit::default()
+        };
+        let mut app = git_app(git).with_ai_runner(Box::new(runner.clone()));
+        app.enqueue(Action::Refresh);
+        app.dispatch(); // flush the startup queue and the first status
         (app, runner)
     }
 
@@ -1709,15 +1749,10 @@ mod tests {
         let log = CallLog::default();
         let git = FakeGit {
             prompting: Some(log.clone()),
+            status: vec![staged_file()],
             ..FakeGit::default()
         };
-        let mut app = App::new(
-            Box::new(git),
-            Box::new(FakeFs::default()),
-            Box::new(MemoryStore::new(None)),
-        )
-        .with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
-        app.last_status = vec![staged_file()];
+        let mut app = git_app(git).with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
         app.enqueue(Action::Commit {
             message: "msg".to_string(),
             amend: false,
@@ -1733,9 +1768,11 @@ mod tests {
     #[test]
     fn plain_commit_keeps_the_terminal() {
         let log = CallLog::default();
-        let mut app =
-            app(MemoryStore::new(None)).with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
-        app.last_status = vec![staged_file()];
+        let git = FakeGit {
+            status: vec![staged_file()],
+            ..FakeGit::default()
+        };
+        let mut app = git_app(git).with_terminal_handoff(Box::new(FakeHandoff(log.clone())));
         app.enqueue(Action::Commit {
             message: "msg".to_string(),
             amend: false,
@@ -1953,6 +1990,64 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("ignored"), "{text}");
+    }
+
+    fn diff_done(source: &DiffSource, text: &str, fresh: bool) -> Done {
+        let doc = DiffDoc {
+            path: text.to_string(),
+            rows: vec![],
+            binary: false,
+        };
+        Done {
+            job: GitJob::Diff {
+                source: source.clone(),
+                fresh,
+            },
+            results: vec![GitResult::Diff {
+                source: source.clone(),
+                doc: Arc::new(doc),
+                fresh,
+            }],
+        }
+    }
+
+    #[test]
+    fn stale_or_unchanged_diffs_are_dropped() {
+        let mut app = app(MemoryStore::new(None));
+        app.dispatch();
+        let a = DiffSource::Working(staged_file());
+        let b = DiffSource::Working(FileChange {
+            path: "other.txt".to_string(),
+            ..staged_file()
+        });
+        app.diff = Some(b.clone());
+        // A late result for the previous selection: dropped.
+        app.accept(diff_done(&a, "a", true));
+        assert!(app.queue.is_empty());
+        // The current one is broadcast...
+        app.accept(diff_done(&b, "b1", true));
+        assert!(matches!(app.queue.pop_front(), Some(Action::DiffLoaded(d)) if d.path == "b1"));
+        // ...a reload only when it changed.
+        app.accept(diff_done(&b, "b1", false));
+        assert!(app.queue.is_empty());
+        app.accept(diff_done(&b, "b2", false));
+        assert!(matches!(app.queue.pop_front(), Some(Action::DiffReloaded(d)) if d.path == "b2"));
+    }
+
+    #[test]
+    fn refreshes_never_pile_up() {
+        let git = FakeGit::default();
+        let calls = Rc::clone(&git.status_calls);
+        let mut app = git_app(git);
+        app.dispatch();
+        // Three requests before the first one is collected: it runs, plus
+        // one more for whatever changed meanwhile.
+        for _ in 0..3 {
+            app.execute(Action::Refresh);
+        }
+        app.dispatch();
+        assert_eq!(calls.get(), 2);
+        assert!(!app.refresh_in_flight && !app.refresh_again);
     }
 
     #[test]

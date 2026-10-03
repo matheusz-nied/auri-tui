@@ -31,21 +31,24 @@ Marque `[x]` ao resolver e referencie o commit/PR ao lado.
 
 ## Performance
 
-- [ ] **10. Git síncrono na thread da UI** — a cada 2 s roda `status` +
+- [x] **10. Git síncrono na thread da UI** — a cada 2 s roda `status` +
   `branch` + diff completo (`-U100000`) do arquivo selecionado. Em repo ou
   arquivo grande a UI trava. Mover para um worker com canal que devolve
   `Action`s. *(problema estrutural mais relevante)*
 - [ ] **11. Polling fixo** — usar watcher de filesystem (crate `notify`) para
   refresh instantâneo e sem custo quando nada muda.
-- [ ] **12. `DiffDoc` clonado várias vezes por carga** (`last_diff`, broadcast,
+- [x] **12. `DiffDoc` clonado várias vezes por carga** (`last_diff`, broadcast,
   `set_doc`). Considerar `Arc<DiffDoc>`.
 
 ## Arquitetura
 
-- [ ] **13. Estado de seleção duplicado** — `App` guarda `selected` e
+- [x] **13. Estado de seleção duplicado** — `App` guarda `selected` e
   `last_diff`, enquanto `Changes` e `DiffView` guardam a própria seleção. O
   hack em `app.rs:125` ("já tem `SelectFile` na fila?") depende da ordem da
   fila e é frágil.
+  *Feito com o worker do git: o hack saiu; resultados de diff são casados
+  por identidade (`DiffSource`) em `App::accept`. `Changes`/`DiffView`
+  seguem com o próprio estado de seleção de UI.*
 - [ ] **14. Layout fixo em `App::render`** — componentes são plugáveis, mas o
   layout não; todo painel novo exige mexer no `App`, que tende a virar um
   "god object".

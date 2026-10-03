@@ -7,6 +7,7 @@ pub mod editor;
 pub mod event;
 pub mod fs;
 pub mod git;
+pub mod git_worker;
 pub mod highlight;
 pub mod icons;
 pub mod layout;

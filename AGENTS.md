@@ -12,9 +12,13 @@ Layered and decoupled — the golden rule is **components never call git**
 ```
 main.rs        terminal init/restore (+ panic hook), CLI arg = repo path
 app.rs         App: owns components, focus, last-frame rects, the action queue.
-               The ONLY place GitBackend/FsBackend are called; results are
-               broadcast back as actions.
-event.rs       crossterm polling (~250 ms) + a ~2 s Tick that drives Refresh
+               The ONLY place git (via `GitJobs`) and FsBackend are used;
+               results are broadcast back as actions.
+git_worker.rs  git off the UI thread: `GitJob` -> `run_job` -> `GitResult`s;
+               `GitJobs` runs jobs in order on a worker thread (or inline in
+               tests) and drops a `Diff` job superseded by a newer one
+event.rs       crossterm polling (~250 ms idle, 16 ms while git/AI work is in
+               flight) + a ~2 s Tick that drives Refresh
 action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
 git/           model types + GitBackend trait; `cli` shells out to git,
@@ -49,10 +53,28 @@ Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
 `ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`,
 `LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`, `LoadDirs`,
-`OpenFile`, `OpenInEditor`, `LoadLastCommitMessage`) are executed by `App` via `Box<dyn GitBackend>` /
-`Box<dyn FsBackend>` → results (`StatusLoaded`, `DiffLoaded`,
-`HistoryLoaded`, `CommitFilesLoaded`, `DirLoaded`, `FileLoaded`,
-`FileReloaded`, `Error`) are broadcast to every component's `update`.
+`OpenFile`, `OpenInEditor`, `LoadLastCommitMessage`) are executed by `App`
+— git ones as `GitJob`s, fs ones directly via `Box<dyn FsBackend>` →
+results (`StatusLoaded`, `DiffLoaded`, `HistoryLoaded`,
+`CommitFilesLoaded`, `DirLoaded`, `FileLoaded`, `FileReloaded`, `Error`)
+are broadcast to every component's `update`.
+
+Git runs on a worker thread (`main.rs`: `with_git_worker`, a second
+`CliGit`); `App::dispatch` takes finished jobs (`GitJobs::poll`) between
+actions and `accept` turns them into actions — so results never arrive
+mid-dispatch. Tests use the default inline mode: jobs run on submit, so a
+`dispatch()` still plays out the whole cascade. Rules:
+- One `Refresh` job at a time (`refresh_in_flight`); more requests meanwhile
+  collapse into one follow-up (`refresh_again`).
+- A diff result is kept only if `App::diff` still equals its `DiffSource`
+  (a newer selection made it stale), and a reload only if the doc changed
+  (`last_diff`). Docs are `Arc<DiffDoc>` — shared, never copied. Until one
+  arrives `DiffView` shows "Loading…".
+- Synchronous git stays on the UI thread only where it must: a commit that
+  may prompt (terminal handed over) and the AI prompt (staged patch). Both
+  call `finish_git_jobs` first (`wait_idle`), so a stage queued just
+  before is in. "Nothing staged" is asked of git at commit time
+  (`git_worker::check_staged`), not read from the last status.
 
 Status sections: `Conflicted` (unmerged, code `!`, one entry, listed
 first as "Merge Changes"; staging marks it resolved, no discard, its diff
@@ -102,7 +124,7 @@ leaves the status; `Commit { hash, file }` is immutable — never reloaded or
 cleared. `Changes`/`History` each carry an `active` flag so only the list
 that owns the diff draws a strong selection; a status tick while a commit
 diff is open never steals it back. `History` refetches only when `head()`
-moves.
+moves (`GitResult::Head` from each refresh).
 
 ### Main pane and explorer
 

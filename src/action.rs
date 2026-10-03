@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::fs::{DirEntry, FileDoc};
 use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
 use crate::layout::SidebarView;
@@ -44,11 +46,12 @@ pub enum Action {
     StatusLoaded(Vec<FileChange>),
     /// Fresh diff data broadcast to all components. Sent in response to
     /// `SelectFile`; receivers reset their scroll to the first change.
-    DiffLoaded(DiffDoc),
+    /// Shared (`Arc`): a whole-file diff can be large.
+    DiffLoaded(Arc<DiffDoc>),
     /// Refreshed diff for the *same* selected file (e.g. after a periodic
     /// refresh noticed the file changed on disk). Receivers update the
     /// content but keep their scroll position.
-    DiffReloaded(DiffDoc),
+    DiffReloaded(Arc<DiffDoc>),
     /// Current branch (or detached HEAD short hash) broadcast after refresh.
     BranchLoaded(String),
     /// Stage if the change is not staged, unstage if it is (side effect).
@@ -127,7 +130,9 @@ pub enum Action {
     },
     /// A commit (or amend) succeeded — the input clears and leaves amend
     /// mode.
-    CommitDone,
+    CommitDone {
+        amended: bool,
+    },
     /// Switch the commit input's amend mode (`Ctrl-A` or its toggle;
     /// handled by `CommitInput`, which may ask for `LoadLastCommitMessage`).
     ToggleAmend,

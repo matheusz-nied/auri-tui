@@ -232,7 +232,7 @@ impl Component for CommitInput {
     fn update(&mut self, action: &Action) -> Option<Action> {
         match action {
             Action::BranchLoaded(branch) => self.branch = branch.clone(),
-            Action::CommitDone => {
+            Action::CommitDone { .. } => {
                 self.set_message("");
                 self.amend = false;
                 self.prefill = None;
@@ -722,7 +722,7 @@ mod tests {
         ));
         c.update(&Action::ToggleAmend);
         assert!(c.amend);
-        c.update(&Action::CommitDone);
+        c.update(&Action::CommitDone { amended: true });
         assert!(!c.amend && c.message.is_empty());
     }
 
