@@ -386,6 +386,29 @@ impl GitBackend for CliGit {
     }
 }
 
+/// The repo's git dir (`HEAD`, `index`) and common dir (`refs`,
+/// `packed-refs`) — the same directory except in a linked worktree. Both
+/// absolute.
+pub fn git_dirs(root: &Path) -> Result<(PathBuf, PathBuf)> {
+    let output = git_command(root)
+        .args(["rev-parse", "--absolute-git-dir", "--git-common-dir"])
+        .output()
+        .context("failed to spawn git — is it installed?")?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let (Some(git_dir), Some(common)) = (lines.next(), lines.next()) else {
+        bail!("git rev-parse: unexpected output");
+    };
+    // `--git-common-dir` may be relative to the directory git ran in.
+    Ok((PathBuf::from(git_dir), root.join(common)))
+}
+
 /// Resolve the toplevel of the repo containing `path`. Errors when `path` is
 /// not inside a git repository (or git can't be spawned).
 pub fn resolve_toplevel(path: &Path) -> Result<PathBuf> {

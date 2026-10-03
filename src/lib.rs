@@ -14,3 +14,4 @@ pub mod keymap;
 pub mod layout;
 pub mod prefs;
 pub mod text;
+pub mod watch;

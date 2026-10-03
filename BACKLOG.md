@@ -35,8 +35,10 @@ Marque `[x]` ao resolver e referencie o commit/PR ao lado.
   `branch` + diff completo (`-U100000`) do arquivo selecionado. Em repo ou
   arquivo grande a UI trava. Mover para um worker com canal que devolve
   `Action`s. *(problema estrutural mais relevante)*
-- [ ] **11. Polling fixo** — usar watcher de filesystem (crate `notify`) para
+- [x] **11. Polling fixo** — usar watcher de filesystem (crate `notify`) para
   refresh instantâneo e sem custo quando nada muda.
+  *Feito: `watch.rs` (worktree + `HEAD`/`index`/`refs` do .git, debounce de
+  150 ms); o tick virou reserva de 30 s, ou 2 s se o watcher não subir.*
 - [x] **12. `DiffDoc` clonado várias vezes por carga** (`last_diff`, broadcast,
   `set_doc`). Considerar `Arc<DiffDoc>`.
 

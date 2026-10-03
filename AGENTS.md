@@ -17,8 +17,12 @@ app.rs         App: owns components, focus, last-frame rects, the action queue.
 git_worker.rs  git off the UI thread: `GitJob` -> `run_job` -> `GitResult`s;
                `GitJobs` runs jobs in order on a worker thread (or inline in
                tests) and drops a `Diff` job superseded by a newer one
-event.rs       crossterm polling (~250 ms idle, 16 ms while git/AI work is in
-               flight) + a ~2 s Tick that drives Refresh
+event.rs       crossterm polling (100 ms idle, 16 ms while git/AI work or a
+               watcher burst is in flight) + a Tick that drives Refresh
+               (30 s with the fs watcher, 2 s without)
+watch.rs       refresh on change: `RepoWatcher` trait (App polls it);
+               `FsWatcher` = notify on a thread; pure `PathFilter`,
+               `relevant_kind`, `Debouncer`
 action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
 keymap.rs      global keys as data (`GLOBAL`: key, `Command`, `Scope`, help,
@@ -77,6 +81,25 @@ mid-dispatch. Tests use the default inline mode: jobs run on submit, so a
   call `finish_git_jobs` first (`wait_idle`), so a stage queued just
   before is in. "Nothing staged" is asked of git at commit time
   (`git_worker::check_staged`), not read from the last status.
+
+Refresh is driven by the filesystem watcher (`watch.rs`; `main.rs`
+starts `FsWatcher` with `git::cli::git_dirs`, `App::with_watcher`):
+worktree changes (minus `.git`, `target`, `node_modules` at any depth)
+and, in the git dir, only `HEAD`, `index`, `packed-refs`, `refs/` (never
+`*.lock`) settle into one `WatchEvent::Changed { last }` after `QUIET`
+(150 ms) or `MAX_WAIT` (1 s). Read events (`Access`, atime) are dropped —
+inotify reports opens, and `git status`/the explorer read on every
+refresh, which would loop. FSEvents/Windows watch the root recursively;
+inotify/kqueue walk it, one watch per non-ignored dir (new dirs added as
+they appear). `App::poll_watcher` refreshes once input is quiet
+(`should_refresh`), skipping a change that is already covered: seen
+before the last refresh was submitted (`refresh_started`), or within
+`SELF_WRITE_GRACE` after one of our own git writes (stage, discard,
+commit — that job refreshes itself; FSEvents reports its writes a few ms
+late). With a watcher the Tick is 30 s (`WATCH_TICK`, safety net); if it
+fails to start, or reports `Failed` later (inotify watch limit), the Tick
+is back to 2 s (`POLL_TICK`) with a status-bar warning. Fake it in tests
+with `FakeWatcher` (`app.rs`).
 
 Status sections: `Conflicted` (unmerged, code `!`, one entry, listed
 first as "Merge Changes"; staging marks it resolved, no discard, its diff

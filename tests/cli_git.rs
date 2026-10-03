@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use auri_tui::git::cli::CliGit;
+use auri_tui::git::cli::{git_dirs, CliGit};
 use auri_tui::git::{GitBackend, Section};
 use tempfile::TempDir;
 
@@ -559,4 +559,23 @@ fn commit_may_prompt_with_signing_or_commit_hooks() {
     fs::remove_file(&hook).unwrap();
     git(&dir, &["config", "commit.gpgsign", "true"]);
     assert!(git_.commit_may_prompt());
+}
+
+#[test]
+fn git_dirs_of_main_and_linked_worktrees() {
+    let dir = make_repo();
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap();
+    let dot_git = canon(&dir.path().join(".git"));
+    let (git_dir, common) = git_dirs(dir.path()).unwrap();
+    assert_eq!(
+        (canon(&git_dir), canon(&common)),
+        (dot_git.clone(), dot_git.clone())
+    );
+
+    let wt = TempDir::new().unwrap();
+    let wt_path = wt.path().join("wt");
+    git(&dir, &["worktree", "add", "-q", wt_path.to_str().unwrap()]);
+    let (git_dir, common) = git_dirs(&wt_path).unwrap();
+    assert_eq!(canon(&git_dir), dot_git.join("worktrees/wt"));
+    assert_eq!(canon(&common), dot_git);
 }

@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "=1.0.104"
+notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
 ratatui = "=0.30.2"
 serde = { version = "=1.0.229", features = ["derive"] }
 syntect = { version = "=5.3.0", default-features = false, features = ["parsing", "regex-fancy", "dump-load"] }

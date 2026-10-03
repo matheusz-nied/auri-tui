@@ -25,13 +25,14 @@ use crate::components::history::History;
 use crate::components::hitbox::Hitboxes;
 use crate::components::view_tabs;
 use crate::editor::EditorLauncher;
-use crate::event::{AppEvent, Events};
+use crate::event::{AppEvent, Events, POLL_TICK, WATCH_TICK};
 use crate::fs::{FileStamp, FsBackend};
 use crate::git::{DiffDoc, DiffSource, GitBackend};
 use crate::git_worker::{self, Done, GitJob, GitJobs, GitResult};
 use crate::keymap::{self, Command, HelpSection};
 use crate::layout::{self, Sidebar, SidebarView};
 use crate::prefs::{Preferences, PrefsStore};
+use crate::watch::{RepoWatcher, WatchEvent};
 
 /// The file shown by `FileView`; `stamp` is its state when last read,
 /// compared on refresh to decide whether to re-read it.
@@ -146,6 +147,17 @@ pub struct App {
     /// Last key/mouse event time — periodic refresh is deferred while input
     /// is actively arriving (see `should_refresh`).
     last_input: Option<Instant>,
+    /// Filesystem watcher: refresh when the repo changes. `None` -> the
+    /// `Tick` (`event::POLL_TICK`) is all there is.
+    watcher: Option<Box<dyn RepoWatcher>>,
+    /// Latest watcher change not refreshed yet (deferred during input).
+    pending_change: Option<Instant>,
+    /// When the latest `GitJob::Refresh` was submitted: a change seen
+    /// before it is already covered.
+    refresh_started: Option<Instant>,
+    /// Until when watcher changes are taken as our own git write's (stage,
+    /// commit...), which refreshes by itself — see `SELF_WRITE_GRACE`.
+    self_write_until: Option<Instant>,
     /// Only redraw when something changed — idle timeouts skip `draw`.
     dirty: bool,
     running: bool,
@@ -168,6 +180,14 @@ where
 /// During an input burst (trackpad scroll = dozens of events) a refresh
 /// would only rebuild the lists under the user's fingers.
 const REFRESH_IDLE: Duration = Duration::from_secs(1);
+
+/// After a git job of ours writes the repo (stage, discard, commit...),
+/// how long watcher changes still count as that write's. The job refreshes
+/// by itself, but the watcher may report its writes a few ms after that
+/// refresh started (FSEvents delivers in batches) — without this, every
+/// stage would refresh twice. An unrelated change in this window shows up
+/// on the next change or tick.
+const SELF_WRITE_GRACE: Duration = Duration::from_millis(100);
 
 /// How long the loop waits for input while git or AI work is in flight —
 /// short, so finished work is shown promptly. Idle, it waits
@@ -240,6 +260,10 @@ impl App {
             message: None,
             message_at: Instant::now(),
             last_input: None,
+            watcher: None,
+            pending_change: None,
+            refresh_started: None,
+            self_write_until: None,
             dirty: true,
             running: true,
         };
@@ -284,6 +308,30 @@ impl App {
         self
     }
 
+    /// Refresh when the repo changes, with the tick as a slow safety net.
+    /// `Err` (no watcher could start) keeps the fast tick and says so.
+    pub fn with_watcher(mut self, watcher: Result<Box<dyn RepoWatcher>>) -> Self {
+        match watcher {
+            Ok(w) => {
+                self.watcher = Some(w);
+                self.events.set_tick_rate(WATCH_TICK);
+            }
+            Err(e) => self.stop_watching(&format!("{e:#}")),
+        }
+        self
+    }
+
+    /// Back to polling every `POLL_TICK`, with a warning.
+    fn stop_watching(&mut self, why: &str) {
+        self.watcher = None;
+        self.pending_change = None;
+        self.events.set_tick_rate(POLL_TICK);
+        self.notify(
+            format!("file watcher off ({why}) — refreshing every 2 s"),
+            true,
+        );
+    }
+
     /// Test hook: swap in a fake AI runner.
     pub fn with_ai_runner(mut self, r: Box<dyn AiRunner>) -> Self {
         self.ai = r;
@@ -293,7 +341,8 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.enqueue(Action::Refresh);
         while self.running {
-            let timeout = if self.git.busy() || self.ai.is_running() {
+            let watching = self.watcher.as_ref().is_some_and(|w| w.pending());
+            let timeout = if self.git.busy() || self.ai.is_running() || watching {
                 BUSY_POLL
             } else {
                 crate::event::POLL_TIMEOUT
@@ -307,6 +356,7 @@ impl App {
                 }
             }
             self.poll_ai();
+            self.poll_watcher(Instant::now());
             self.expire_message(Instant::now());
             self.dispatch();
             self.sync_prefs();
@@ -418,6 +468,16 @@ impl App {
                 }
             }
         }
+        if matches!(
+            done.job,
+            GitJob::ToggleStage(_)
+                | GitJob::StageAll
+                | GitJob::UnstageAll
+                | GitJob::Discard(_)
+                | GitJob::Commit { .. }
+        ) {
+            self.self_write_until = Some(Instant::now() + SELF_WRITE_GRACE);
+        }
         if done.job == GitJob::Refresh {
             self.refresh_in_flight = false;
             if std::mem::take(&mut self.refresh_again) {
@@ -433,6 +493,7 @@ impl App {
             self.refresh_again = true;
         } else {
             self.refresh_in_flight = true;
+            self.refresh_started = Some(Instant::now());
             self.git.submit(GitJob::Refresh);
         }
     }
@@ -602,6 +663,36 @@ impl App {
                 self.enqueue(Action::CommitMessageFailed);
                 self.notify("Generation cancelled", false);
             }
+        }
+    }
+
+    /// Take settled changes from the watcher and refresh once input is
+    /// quiet — unless a refresh started after the change already sees it,
+    /// or it is our own git write's (`SELF_WRITE_GRACE`), whose job
+    /// refreshed. Called once per loop iteration.
+    fn poll_watcher(&mut self, now: Instant) {
+        while let Some(event) = self.watcher.as_mut().and_then(|w| w.poll()) {
+            match event {
+                WatchEvent::Changed { last } => {
+                    self.pending_change = self.pending_change.max(Some(last));
+                }
+                WatchEvent::Failed(why) => {
+                    self.stop_watching(&why);
+                    return;
+                }
+            }
+        }
+        let Some(last) = self.pending_change else {
+            return;
+        };
+        if !should_refresh(self.last_input, now) {
+            return;
+        }
+        self.pending_change = None;
+        let covered = self.refresh_started.is_some_and(|started| last < started)
+            || self.self_write_until.is_some_and(|until| last <= until);
+        if !covered {
+            self.enqueue(Action::Refresh);
         }
     }
 
@@ -2019,6 +2110,120 @@ mod tests {
         app.dispatch();
         assert_eq!(calls.get(), 2);
         assert!(!app.refresh_in_flight && !app.refresh_again);
+    }
+
+    /// Watcher whose events the test pushes.
+    #[derive(Clone, Default)]
+    struct FakeWatcher {
+        events: Rc<RefCell<VecDeque<WatchEvent>>>,
+    }
+
+    impl FakeWatcher {
+        fn push(&self, event: WatchEvent) {
+            self.events.borrow_mut().push_back(event);
+        }
+    }
+
+    impl RepoWatcher for FakeWatcher {
+        fn poll(&mut self) -> Option<WatchEvent> {
+            self.events.borrow_mut().pop_front()
+        }
+        fn pending(&self) -> bool {
+            false
+        }
+    }
+
+    /// An App watching through a `FakeWatcher`, its first refresh done,
+    /// plus the status call counter.
+    fn watched_app() -> (App, FakeWatcher, Rc<std::cell::Cell<usize>>) {
+        let git = FakeGit::default();
+        let calls = Rc::clone(&git.status_calls);
+        let watcher = FakeWatcher::default();
+        let mut app = git_app(git).with_watcher(Ok(Box::new(watcher.clone())));
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert_eq!(calls.get(), 1);
+        (app, watcher, calls)
+    }
+
+    fn later() -> Instant {
+        Instant::now() + Duration::from_millis(5)
+    }
+
+    #[test]
+    fn watcher_slows_the_tick_and_its_failure_restores_it() {
+        let (mut app, watcher, _) = watched_app();
+        assert_eq!(app.events.tick_rate(), WATCH_TICK);
+        assert!(app.message.is_none());
+        watcher.push(WatchEvent::Failed("limit reached".to_string()));
+        app.poll_watcher(Instant::now());
+        assert!(app.watcher.is_none());
+        assert_eq!(app.events.tick_rate(), POLL_TICK);
+        let (msg, is_error) = app.message.clone().unwrap();
+        assert!(msg.contains("limit reached") && is_error, "{msg}");
+
+        let app = git_app(FakeGit::default()).with_watcher(Err(anyhow::anyhow!("no inotify")));
+        assert_eq!(app.events.tick_rate(), POLL_TICK);
+        assert!(app.message.unwrap().0.contains("no inotify"));
+    }
+
+    #[test]
+    fn a_change_refreshes_once() {
+        let (mut app, watcher, calls) = watched_app();
+        // A burst reported as two settled events -> one refresh.
+        watcher.push(WatchEvent::Changed { last: later() });
+        watcher.push(WatchEvent::Changed { last: later() });
+        app.poll_watcher(Instant::now());
+        app.dispatch();
+        assert_eq!(calls.get(), 2);
+        app.poll_watcher(Instant::now());
+        app.dispatch();
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn a_change_seen_before_the_last_refresh_is_already_covered() {
+        let (mut app, watcher, calls) = watched_app();
+        // Stage: the job writes the index (the watcher sees it), then
+        // refreshes by itself.
+        let index_written = Instant::now() - Duration::from_millis(1);
+        app.enqueue(Action::ToggleStage(staged_file()));
+        app.dispatch();
+        assert_eq!(calls.get(), 2);
+        watcher.push(WatchEvent::Changed {
+            last: index_written,
+        });
+        app.poll_watcher(Instant::now());
+        app.dispatch();
+        assert_eq!(calls.get(), 2, "the stage's own write refreshed again");
+        // Reported a little after the stage's refresh started: still its.
+        watcher.push(WatchEvent::Changed {
+            last: Instant::now(),
+        });
+        app.poll_watcher(Instant::now());
+        app.dispatch();
+        assert_eq!(calls.get(), 2, "the stage's late-reported write");
+        // Past the grace window, a change is a change.
+        watcher.push(WatchEvent::Changed {
+            last: Instant::now() + SELF_WRITE_GRACE + Duration::from_millis(1),
+        });
+        app.poll_watcher(Instant::now());
+        app.dispatch();
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn a_change_waits_for_input_to_go_quiet() {
+        let (mut app, watcher, calls) = watched_app();
+        let now = later();
+        app.last_input = Some(now);
+        watcher.push(WatchEvent::Changed { last: now });
+        app.poll_watcher(now);
+        app.dispatch();
+        assert_eq!(calls.get(), 1);
+        app.poll_watcher(now + REFRESH_IDLE);
+        app.dispatch();
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

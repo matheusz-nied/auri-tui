@@ -4,9 +4,15 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
 
 /// How long `poll_event` waits for input when nothing else is going on.
-pub const POLL_TIMEOUT: Duration = Duration::from_millis(250);
-/// How often a `Tick` is emitted (drives `Action::Refresh` in `App`).
-const TICK_RATE: Duration = Duration::from_secs(2);
+/// Also bounds how late a filesystem-watcher signal is picked up (the
+/// wait can't be interrupted), so a change shows up well under 0.5 s.
+pub const POLL_TIMEOUT: Duration = Duration::from_millis(100);
+/// How often a `Tick` is emitted (drives `Action::Refresh` in `App`) when
+/// nothing tells us the repo changed — no filesystem watcher.
+pub const POLL_TICK: Duration = Duration::from_secs(2);
+/// The tick with a filesystem watcher running: only a safety net (network
+/// filesystems, a watcher that silently misses events).
+pub const WATCH_TICK: Duration = Duration::from_secs(30);
 /// Max events `drain` reads per frame — a bound so an endless input stream
 /// can't starve rendering forever.
 const MAX_DRAIN: usize = 256;
@@ -27,9 +33,18 @@ pub enum AppEvent {
 /// Wraps crossterm event polling and injects periodic ticks.
 pub struct Events {
     last_tick: Instant,
+    tick_rate: Duration,
 }
 
 impl Events {
+    pub fn tick_rate(&self) -> Duration {
+        self.tick_rate
+    }
+
+    pub fn set_tick_rate(&mut self, rate: Duration) {
+        self.tick_rate = rate;
+    }
+
     /// Wait up to `timeout` for the next event. Returns `Ok(None)` on a
     /// plain timeout so the caller can redraw; key-release events (sent by some
     /// terminals/platforms) are filtered out.
@@ -47,7 +62,7 @@ impl Events {
                     _ => continue,
                 }
             }
-            if self.last_tick.elapsed() >= TICK_RATE {
+            if self.last_tick.elapsed() >= self.tick_rate {
                 self.last_tick = Instant::now();
                 return Ok(Some(AppEvent::Tick));
             }
@@ -84,6 +99,7 @@ impl Default for Events {
     fn default() -> Self {
         Self {
             last_tick: Instant::now(),
+            tick_rate: POLL_TICK,
         }
     }
 }

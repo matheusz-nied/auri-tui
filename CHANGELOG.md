@@ -7,6 +7,13 @@ may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- Changes show up as soon as they happen: a filesystem watcher triggers
+  the refresh instead of polling git every 2 s, so an idle auri runs no
+  git at all. Without a watcher (e.g. the inotify limit is reached) it
+  falls back to polling and says so in the status bar.
+
 ## [0.1.0] - Unreleased
 
 First public release.

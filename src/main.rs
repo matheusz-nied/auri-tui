@@ -5,8 +5,9 @@ use anyhow::Result;
 use auri_tui::app::{App, TerminalHandoff};
 use auri_tui::editor::ShellEditor;
 use auri_tui::fs::local::LocalFs;
-use auri_tui::git::cli::{resolve_toplevel, CliGit};
+use auri_tui::git::cli::{git_dirs, resolve_toplevel, CliGit};
 use auri_tui::prefs::{FileStore, MemoryStore, PrefsStore};
+use auri_tui::watch::{FsWatcher, RepoWatcher};
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -58,6 +59,10 @@ fn main() -> Result<()> {
         Some(path) => Box::new(FileStore::new(path)),
         None => Box::new(MemoryStore::new(None)),
     };
+    // Refresh when the repo changes; without a watcher, poll every 2 s.
+    let watcher = git_dirs(&root)
+        .and_then(|(git_dir, common_dir)| FsWatcher::start(&root, &git_dir, &common_dir))
+        .map(|w| Box::new(w) as Box<dyn RepoWatcher>);
     // Two stateless git backends: one for the worker thread (status,
     // diffs, staging…), one for the few calls the UI thread makes itself.
     let mut app = App::new(
@@ -67,7 +72,8 @@ fn main() -> Result<()> {
     )
     .with_git_worker(Box::new(CliGit::new(root)))
     .with_terminal_handoff(Box::new(Crossterm))
-    .with_editor(Box::new(ShellEditor));
+    .with_editor(Box::new(ShellEditor))
+    .with_watcher(watcher);
     let result = app.run(&mut terminal);
 
     let _ = execute!(stdout(), DisableMouseCapture, DisableBracketedPaste);
