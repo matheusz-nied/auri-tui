@@ -10,7 +10,7 @@ homepage = "https://matheusz-nied.github.io/auri-tui"
 readme = "README.md"
 keywords = ["git", "diff", "tui", "terminal", "file-explorer"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["/.github", "/site", "/demo", "/BACKLOG.md", "/LAUNCH_CHECKLIST.md", "/AGENTS.md", "/.mimocode", "/RELEASING.md", "/cliff.toml", "/dist-workspace.toml"]
+exclude = ["/.github", "/site", "/demo", "/assets", "/BACKLOG.md", "/LAUNCH_CHECKLIST.md", "/AGENTS.md", "/.mimocode", "/RELEASING.md", "/cliff.toml", "/dist-workspace.toml"]
 
 [[bin]]
 name = "auri"

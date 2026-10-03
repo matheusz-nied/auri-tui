@@ -1,6 +1,19 @@
-# auri
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img alt="auri" src="assets/logo-light.svg" height="80">
+  </picture>
+</h1>
 
-**Browse files and git diffs side by side, right in your terminal.**
+<p align="center">
+  <strong>Browse files and git diffs side by side, right in your terminal.</strong>
+</p>
+
+<p align="center">
+  <a href="https://crates.io/crates/auri-tui"><img alt="crates.io" src="https://img.shields.io/crates/v/auri-tui?color=d6a24a"></a>
+  <a href="https://github.com/matheusz-nied/auri-tui/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/matheusz-nied/auri-tui/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-9fb3d1"></a>
+</p>
 
 <!-- Regenerate with `vhs demo/demo.tape` -->
 ![auri demo](demo/demo.gif)
