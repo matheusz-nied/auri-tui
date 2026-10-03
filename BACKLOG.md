@@ -64,21 +64,21 @@ Marque `[x]` ao resolver e referencie o commit/PR ao lado.
 
 - [ ] **17. Diretório `.mimocode/`** (plugin de outra ferramenta) na raiz e
   não ignorado — adicionar ao `.gitignore`.
-- [ ] **18. Sem README, sem CI e sem o primeiro commit.**
+- [x] **18. Sem README, sem CI e sem o primeiro commit.**
 - [ ] **19. Versões fixadas com `=` no `Cargo.toml`** (incomum para binário,
   trava updates) e edition 2021 (poderia ser 2024).
 
 ## Funcionalidades que faltam
 
-- [ ] Descartar mudanças de um arquivo
+- [x] Descartar mudanças de um arquivo
 - [ ] Stage/unstage por hunk ou linha
-- [ ] Abrir arquivo no `$EDITOR`
-- [ ] Commit multilinha e amend
+- [x] Abrir arquivo no `$EDITOR`
+- [x] Commit multilinha e amend
 - [ ] Push / pull
 - [ ] Scroll horizontal com Shift+roda do mouse
-- [ ] Redimensionar painéis com o mouse
-- [ ] Árvore de arquivos
-- [ ] Histórico / log
+- [x] Redimensionar painéis com o mouse
+- [x] Árvore de arquivos
+- [x] Histórico / log
 
 ## Ordem sugerida
 

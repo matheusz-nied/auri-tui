@@ -7,14 +7,7 @@ may include breaking changes.
 
 ## [Unreleased]
 
-### Changed
-
-- Changes show up as soon as they happen: a filesystem watcher triggers
-  the refresh instead of polling git every 2 s, so an idle auri runs no
-  git at all. Without a watcher (e.g. the inotify limit is reached) it
-  falls back to polling and says so in the status bar.
-
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-10-03
 
 First public release.
 
@@ -36,6 +29,12 @@ First public release.
 - Mouse support: clickable buttons, tabs and draggable dividers.
 - Git runs on a background thread: the UI stays responsive while large
   diffs load or a slow repo refreshes.
+- Changes show up as soon as they happen: a filesystem watcher triggers
+  the refresh, so an idle auri runs no git at all. Without a watcher
+  (e.g. the inotify limit is reached) it falls back to polling every 2 s
+  and says so in the status bar.
+- "Astro" color theme — warm black, ivory text and a gold accent, shared
+  with the landing page.
 - Bracketed paste: pasted text keeps its line breaks and never commits.
 - `--help` and `--version`; `?` inside auri lists every key.
 
