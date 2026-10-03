@@ -134,9 +134,13 @@ max_diff_chars = 20000
 
 ## Why "auri"?
 
+<img src="assets/mark.svg" alt="" width="112" align="right">
+
 Latin for *of gold*. Albireo, the famous double star in Cygnus, shows a
 gold and a blue star side by side — two views of the same spot in the sky,
 like a diff.
+
+<br clear="right">
 
 ## Development
 
