@@ -2,12 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use ratatui::backend::Backend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::{DefaultTerminal, Frame};
+use ratatui::{DefaultTerminal, Frame, Terminal};
 
 use crate::action::{Action, PanelId};
 use crate::ai::{self, AiOutcome, AiProvider, AiRunner, ProcessRunner};
@@ -140,6 +141,19 @@ pub struct App {
     running: bool,
 }
 
+/// Clear the screen and make the next draw repaint every cell. `resize` to
+/// the current size does that without `Terminal::clear`'s cursor-position
+/// query, which ends the app with an error when the terminal doesn't
+/// answer in time (some multiplexers, slow links).
+fn redraw_from_scratch<B: Backend>(terminal: &mut Terminal<B>) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let area = terminal.size()?.into();
+    terminal.resize(area)?;
+    Ok(())
+}
+
 /// How long after the last input event a `Tick` may trigger `Action::Refresh`.
 /// During an input burst (trackpad scroll = dozens of events) the synchronous
 /// git calls must not interleave with event handling.
@@ -267,7 +281,7 @@ impl App {
             if self.needs_clear {
                 // Forget the last frame: the screen holds someone else's
                 // output now, and only a full redraw replaces it.
-                terminal.clear()?;
+                redraw_from_scratch(terminal)?;
                 self.needs_clear = false;
                 self.dirty = true;
             }
@@ -1755,6 +1769,72 @@ mod tests {
             "{:?}",
             app.message
         );
+    }
+
+    /// A `TestBackend` that fails the test on a cursor-position query —
+    /// what a terminal that never answers it amounts to.
+    struct NoCursorQuery(ratatui::backend::TestBackend);
+
+    impl Backend for NoCursorQuery {
+        type Error = std::convert::Infallible;
+        fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.0.draw(content)
+        }
+        fn hide_cursor(&mut self) -> Result<(), Self::Error> {
+            self.0.hide_cursor()
+        }
+        fn show_cursor(&mut self) -> Result<(), Self::Error> {
+            self.0.show_cursor()
+        }
+        fn get_cursor_position(&mut self) -> Result<ratatui::layout::Position, Self::Error> {
+            panic!("cursor position queried")
+        }
+        fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+            &mut self,
+            position: P,
+        ) -> Result<(), Self::Error> {
+            self.0.set_cursor_position(position)
+        }
+        fn clear(&mut self) -> Result<(), Self::Error> {
+            self.0.clear()
+        }
+        fn clear_region(
+            &mut self,
+            clear_type: ratatui::backend::ClearType,
+        ) -> Result<(), Self::Error> {
+            self.0.clear_region(clear_type)
+        }
+        fn size(&self) -> Result<ratatui::layout::Size, Self::Error> {
+            self.0.size()
+        }
+        fn window_size(&mut self) -> Result<ratatui::backend::WindowSize, Self::Error> {
+            self.0.window_size()
+        }
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            self.0.flush()
+        }
+    }
+
+    #[test]
+    fn redraw_from_scratch_repaints_without_a_cursor_query() {
+        use ratatui::buffer::Cell;
+        let mut term =
+            Terminal::new(NoCursorQuery(ratatui::backend::TestBackend::new(20, 3))).unwrap();
+        let mut app = app(MemoryStore::new(None));
+        let frame = |term: &mut Terminal<NoCursorQuery>, app: &mut App| {
+            term.draw(|f| app.render(f)).unwrap();
+            term.backend().0.buffer().clone()
+        };
+        let before = frame(&mut term, &mut app);
+        // Another program (the editor) scribbles over the screen.
+        let junk = Cell::new("#");
+        let cells: Vec<_> = (0..20).map(|x| (x, 1, &junk)).collect();
+        term.backend_mut().draw(cells.into_iter()).unwrap();
+        redraw_from_scratch(&mut term).unwrap();
+        assert_eq!(frame(&mut term, &mut app), before);
     }
 
     #[test]
