@@ -1,5 +1,6 @@
 use std::fs;
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 use auri_tui::git::cli::CliGit;
 use auri_tui::git::{GitBackend, Section};
@@ -50,6 +51,34 @@ fn status_reports_sections() {
         .expect("untracked.txt in status");
     assert_eq!(untracked.section, Section::Untracked);
     assert_eq!(untracked.code, 'U');
+}
+
+#[test]
+fn status_never_rewrites_the_index() {
+    let dir = make_repo();
+    git(&dir, &["checkout", "--", "tracked.txt"]);
+    // Same content, new mtime: the index's cached stat info is stale, so a
+    // plain `git status` would refresh it and rewrite `.git/index`.
+    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    fs::File::options()
+        .write(true)
+        .open(dir.path().join("tracked.txt"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let index = dir.path().join(".git/index");
+    let before = fs::read(&index).unwrap();
+
+    CliGit::new(dir.path()).status().unwrap();
+    assert_eq!(
+        fs::read(&index).unwrap(),
+        before,
+        "status rewrote the index"
+    );
+
+    // Sanity check: the setup really makes git want to write it.
+    git(&dir, &["status", "--porcelain"]);
+    assert_ne!(fs::read(&index).unwrap(), before);
 }
 
 #[test]

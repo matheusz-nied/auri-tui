@@ -36,6 +36,15 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// `git -C <dir>` without optional locks: the periodic `status` must not
+/// take `index.lock` to refresh the index, or it races git commands the
+/// user runs in another terminal ("index.lock exists").
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("--no-optional-locks").arg("-C").arg(dir);
+    cmd
+}
+
 /// Talks to git by spawning the `git` CLI in a fixed repository root.
 pub struct CliGit {
     root: PathBuf,
@@ -52,9 +61,7 @@ impl CliGit {
     /// `ok_codes` lists exit codes treated as success besides 0 (used for
     /// `diff --no-index`, which exits 1 when files differ).
     fn run(&self, args: &[&str], ok_codes: &[i32]) -> Result<Output> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
+        let output = git_command(&self.root)
             .args(args)
             .output()
             .context("failed to spawn git")?;
@@ -63,9 +70,7 @@ impl CliGit {
 
     /// `run` with `input` written to git's stdin.
     fn run_with_stdin(&self, args: &[&str], input: &[u8]) -> Result<Output> {
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
+        let mut child = git_command(&self.root)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -372,9 +377,7 @@ impl GitBackend for CliGit {
 /// Resolve the toplevel of the repo containing `path`. Errors when `path` is
 /// not inside a git repository (or git can't be spawned).
 pub fn resolve_toplevel(path: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
+    let output = git_command(path)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("failed to spawn git — is it installed?")?;
