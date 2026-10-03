@@ -27,6 +27,7 @@ First public release.
 - Resizable, collapsible sidebar; layout and settings persisted in
   `~/.config/auri/preferences.toml`.
 - Mouse support: clickable buttons, tabs and draggable dividers.
+- Bracketed paste: pasted text keeps its line breaks and never commits.
 - `--help` and `--version`.
 
 [Unreleased]: https://github.com/matheusz-nied/auri-tui/compare/v0.1.0...HEAD

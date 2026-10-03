@@ -71,7 +71,8 @@ supports it; auri resumes when the editor exits.
 sideways, `n`/`N` next/previous change (diff).
 
 **Commit box** — type, `Enter` to commit, `Ctrl-J` for a new line (the box
-grows), `Esc` to leave. `Ctrl-A` or the `amend` toggle switches to amending
+grows; pasted text keeps its line breaks and never commits), `Esc` to
+leave. `Ctrl-A` or the `amend` toggle switches to amending
 the last commit: an empty box gets its message, and nothing needs to be
 staged.
 

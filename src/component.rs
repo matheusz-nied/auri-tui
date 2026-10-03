@@ -20,6 +20,13 @@ pub trait Component {
         None
     }
 
+    /// Handle pasted text (bracketed paste) while this component is
+    /// focused. Return an action to enqueue, or `None`.
+    fn handle_paste(&mut self, text: &str) -> Option<Action> {
+        let _ = text;
+        None
+    }
+
     /// Handle a mouse event. `area` is the rect where the component was last
     /// rendered (including its border), so `ev.row - area.y - 1` gives a row
     /// inside the component.

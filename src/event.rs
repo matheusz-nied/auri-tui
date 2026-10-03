@@ -18,6 +18,9 @@ pub enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
+    /// Text pasted while bracketed paste is on — one event, newlines
+    /// included, instead of a key press per character.
+    Paste(String),
     Tick,
 }
 
@@ -40,6 +43,7 @@ impl Events {
                     Event::Key(_) => continue,
                     Event::Mouse(mouse) => return Ok(Some(AppEvent::Mouse(mouse))),
                     Event::Resize(w, h) => return Ok(Some(AppEvent::Resize(w, h))),
+                    Event::Paste(text) => return Ok(Some(AppEvent::Paste(text))),
                     _ => continue,
                 }
             }
@@ -68,6 +72,7 @@ impl Events {
                 Event::Key(_) => {}
                 Event::Mouse(mouse) => out.push(AppEvent::Mouse(mouse)),
                 Event::Resize(w, h) => out.push(AppEvent::Resize(w, h)),
+                Event::Paste(text) => out.push(AppEvent::Paste(text)),
                 _ => {}
             }
         }

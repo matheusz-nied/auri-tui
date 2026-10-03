@@ -208,6 +208,20 @@ impl Component for CommitInput {
         None
     }
 
+    /// Pasted text is inserted as-is, newlines included (CRLF/CR become
+    /// LF, tabs 4 spaces); other control characters are dropped. It never
+    /// commits.
+    fn handle_paste(&mut self, text: &str) -> Option<Action> {
+        let text = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', "    ");
+        for c in text.chars().filter(|&c| c == '\n' || !c.is_control()) {
+            self.insert(c);
+        }
+        None
+    }
+
     fn handle_mouse(&mut self, ev: MouseEvent, _area: Rect) -> Option<Action> {
         if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
             return self.hitboxes.hit(ev.column, ev.row);
@@ -710,5 +724,15 @@ mod tests {
         assert!(c.amend);
         c.update(&Action::CommitDone);
         assert!(!c.amend && c.message.is_empty());
+    }
+
+    #[test]
+    fn paste_inserts_lines_at_the_cursor_without_committing() {
+        let mut c = CommitInput::default();
+        type_str(&mut c, "ab");
+        press(&mut c, KeyCode::Left, KeyModifiers::NONE);
+        assert!(c.handle_paste("x\r\ny\rz\t\u{1b}").is_none());
+        assert_eq!(c.message_text(), "ax\ny\nz    b");
+        assert_eq!(c.cursor, 10);
     }
 }

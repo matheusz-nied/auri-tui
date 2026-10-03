@@ -78,6 +78,11 @@ commit errors "Nothing staged". Switching amend on with an empty box emits
 off drops that prefill unless edited. `CommitDone` clears the box and
 leaves amend mode.
 
+Bracketed paste is on (`main.rs`, and around every terminal handoff):
+a paste arrives as one `AppEvent::Paste`, which `App` sends to the focused
+panel's `Component::handle_paste` (never to an overlay). `CommitInput`
+inserts it with its newlines, so a pasted line break can't act as Enter.
+
 `OpenInEditor { path, line }` (`o` in Changes, the tree, the file viewer
 and the diff) always hands the terminal over: `App` checks the file still
 exists (`fs.stamp`), runs `Box<dyn EditorLauncher>` (fake it via

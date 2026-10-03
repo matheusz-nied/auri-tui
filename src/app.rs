@@ -305,6 +305,11 @@ impl App {
                 self.dirty = true;
                 self.on_mouse(mouse);
             }
+            AppEvent::Paste(text) => {
+                self.last_input = Some(Instant::now());
+                self.dirty = true;
+                self.on_paste(&text);
+            }
             // The next draw picks up the new size automatically.
             AppEvent::Resize(..) => self.dirty = true,
             AppEvent::Tick => {
@@ -933,6 +938,20 @@ impl App {
         }
         if let Some((_, comp)) = self.components.iter_mut().find(|(id, _)| *id == self.focus) {
             if let Some(action) = comp.handle_key(key) {
+                self.enqueue(action);
+            }
+        }
+    }
+
+    /// Pasted text goes to the focused panel — never to an overlay, where
+    /// it could confirm a dialog.
+    fn on_paste(&mut self, text: &str) {
+        self.message = None;
+        if self.overlays.iter().any(|o| o.captures_input()) {
+            return;
+        }
+        if let Some((_, comp)) = self.components.iter_mut().find(|(id, _)| *id == self.focus) {
+            if let Some(action) = comp.handle_paste(text) {
                 self.enqueue(action);
             }
         }
@@ -1918,6 +1937,22 @@ mod tests {
         let text = screen(&mut app);
         assert!(text.contains("✓ Commit"), "{text}");
         assert_eq!(app.rects[&PanelId::CommitInput].height, 4);
+    }
+
+    #[test]
+    fn paste_goes_to_the_focused_panel_and_never_commits() {
+        let (mut app, commits) = commit_app();
+        app.on_paste("ignored by the changes list");
+        app.on_key(KeyEvent::from(KeyCode::Char('c')));
+        app.on_paste("feat: pasted\n\nbody");
+        app.dispatch();
+        assert!(commits.borrow().is_empty());
+        let text = screen(&mut app);
+        assert!(
+            text.contains("feat: pasted") && text.contains("body"),
+            "{text}"
+        );
+        assert!(!text.contains("ignored"), "{text}");
     }
 
     #[test]

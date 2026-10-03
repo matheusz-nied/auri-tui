@@ -8,7 +8,9 @@ use auri_tui::fs::local::LocalFs;
 use auri_tui::git::cli::{resolve_toplevel, CliGit};
 use auri_tui::prefs::{FileStore, MemoryStore, PrefsStore};
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -46,7 +48,8 @@ fn main() -> Result<()> {
 
     install_panic_hook();
     let mut terminal = ratatui::init();
-    execute!(stdout(), EnableMouseCapture)?;
+    // Bracketed paste: a pasted newline must not act as Enter (commit).
+    execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
 
     // No home directory (nothing to derive a config path from) -> prefs are
     // in-memory only for this session.
@@ -63,7 +66,7 @@ fn main() -> Result<()> {
     .with_editor(Box::new(ShellEditor));
     let result = app.run(&mut terminal);
 
-    let _ = execute!(stdout(), DisableMouseCapture);
+    let _ = execute!(stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     result
 }
@@ -75,13 +78,24 @@ struct Crossterm;
 
 impl TerminalHandoff for Crossterm {
     fn release(&mut self) {
-        let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen, Show);
+        let _ = execute!(
+            stdout(),
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+            Show
+        );
         let _ = disable_raw_mode();
     }
 
     fn reclaim(&mut self) {
         let _ = enable_raw_mode();
-        let _ = execute!(stdout(), EnterAlternateScreen, EnableMouseCapture);
+        let _ = execute!(
+            stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        );
     }
 }
 
@@ -90,7 +104,7 @@ impl TerminalHandoff for Crossterm {
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(stdout(), DisableMouseCapture);
+        let _ = execute!(stdout(), DisableMouseCapture, DisableBracketedPaste);
         ratatui::restore();
         default_hook(info);
     }));
