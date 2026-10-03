@@ -10,6 +10,7 @@ pub mod git;
 pub mod git_worker;
 pub mod highlight;
 pub mod icons;
+pub mod keymap;
 pub mod layout;
 pub mod prefs;
 pub mod text;

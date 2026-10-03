@@ -21,6 +21,8 @@ event.rs       crossterm polling (~250 ms idle, 16 ms while git/AI work is in
                flight) + a ~2 s Tick that drives Refresh
 action.rs      Action enum — the single message type everything speaks
 component.rs   Component trait — implement it to add a panel
+keymap.rs      global keys as data (`GLOBAL`: key, `Command`, `Scope`, help,
+               status chunk) — `lookup`, status-bar hints, help screen
 git/           model types + GitBackend trait; `cli` shells out to git,
                `parse` has pure, unit-tested parsing functions
 ai/            AI commit-message generation: pure prompt/cleanup helpers +
@@ -199,6 +201,21 @@ reach components — App calls it before the tab bar and panel routing.
 `[`/`]` resize it; `e` shows the Explorer view, `c`/`1`/`3` the Source
 Control view while focusing CommitInput/Changes/History; `2` focuses the
 main pane (diff or file).
+
+### Keys — `keymap.rs`
+
+Global keys are a table, not code: `App::on_key` asks
+`keymap::lookup(key, ctx)` first (`Ctx`: overlay open, typing in the commit
+box, AI running) and runs the `Command` (`App::run_command`); otherwise the
+key goes to the open overlay, else the focused panel. `Scope` decides where
+a binding is live: `Anywhere` (Ctrl-C, even in a dialog), `Global` (also
+while typing), `Navigation` (not while typing — letters are text there),
+`Typing`. The status bar's global hints (`status_hints`, from each
+binding's `status` chunk) and the `?` help overlay (`components/help.rs`:
+`GLOBAL`, `MOUSE`, then every panel's `hints()` split by `hint_rows`) are
+generated from the same data — to add a global key, add a `Binding` (and a
+`Command` arm); a panel key goes in its `handle_key` *and* its `hints()`.
+Panel hints must not repeat global keys.
 
 ### Preferences — `prefs/mod.rs`
 

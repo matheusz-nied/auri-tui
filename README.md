@@ -56,6 +56,7 @@ diff. Drag the dividers to resize.
 | `b` | Toggle sidebar |
 | `[` / `]` | Shrink / grow sidebar |
 | `r` | Refresh |
+| `?` | All keys (help) |
 | `q` / `Ctrl-C` | Quit |
 
 **Lists** — `j`/`k` or arrows to move, `g`/`G` top/bottom, `Enter` to open.

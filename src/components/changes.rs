@@ -328,7 +328,7 @@ impl Component for Changes {
     }
 
     fn hints(&self) -> &'static str {
-        "space stage/unstage · d discard · a stage all · enter diff · o edit · c message"
+        "space stage/unstage · d discard · a stage all · enter diff · o edit"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {

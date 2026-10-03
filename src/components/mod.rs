@@ -4,6 +4,7 @@ pub mod confirm_dialog;
 pub mod diff_view;
 pub mod file_tree;
 pub mod file_view;
+pub mod help;
 pub mod history;
 pub mod hitbox;
 pub mod view_tabs;

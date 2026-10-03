@@ -52,7 +52,7 @@ Marque `[x]` ao resolver e referencie o commit/PR ao lado.
 - [ ] **14. Layout fixo em `App::render`** — componentes são plugáveis, mas o
   layout não; todo painel novo exige mexer no `App`, que tende a virar um
   "god object".
-- [ ] **15. Atalhos globais fixos num `match`** (`app.rs:223-282`) — sem
+- [x] **15. Atalhos globais fixos num `match`** (`app.rs:223-282`) — sem
   keymap, e o help do status bar é uma string manual. Gerar help a partir do
   keymap.
 - [ ] **16. `App` sem testes** — o doc comment promete "mock backend", mas não

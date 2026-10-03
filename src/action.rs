@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::fs::{DirEntry, FileDoc};
 use crate::git::{Commit, CommitFile, DiffDoc, FileChange};
+use crate::keymap::HelpSection;
 use crate::layout::SidebarView;
 use crate::prefs::Preferences;
 
@@ -16,6 +17,20 @@ pub enum PanelId {
     DiffView,
     /// Read-only file viewer; shares the main pane with `DiffView`.
     FileView,
+}
+
+impl PanelId {
+    /// The panel's name on the help screen.
+    pub fn name(self) -> &'static str {
+        match self {
+            PanelId::CommitInput => "Commit box",
+            PanelId::Changes => "Changes",
+            PanelId::History => "History",
+            PanelId::Explorer => "Explorer",
+            PanelId::DiffView => "Diff",
+            PanelId::FileView => "File viewer",
+        }
+    }
 }
 
 /// The single message type that flows through the app.
@@ -162,5 +177,8 @@ pub enum Action {
     /// Preferences were (re)loaded — at startup and after each persisted
     /// change. Broadcast so components can read their section.
     PreferencesChanged(Preferences),
+    /// Open the key reference overlay with these sections (`?`; built by
+    /// `App` from `keymap` and every panel's `hints`).
+    ShowHelp(Vec<HelpSection>),
     Error(String),
 }

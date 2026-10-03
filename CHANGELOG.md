@@ -30,7 +30,7 @@ First public release.
 - Git runs on a background thread: the UI stays responsive while large
   diffs load or a slow repo refreshes.
 - Bracketed paste: pasted text keeps its line breaks and never commits.
-- `--help` and `--version`.
+- `--help` and `--version`; `?` inside auri lists every key.
 
 [Unreleased]: https://github.com/matheusz-nied/auri-tui/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/matheusz-nied/auri-tui/releases/tag/v0.1.0

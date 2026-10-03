@@ -257,7 +257,7 @@ impl Component for CommitInput {
     }
 
     fn hints(&self) -> &'static str {
-        "enter commit · ^j newline · ^a amend · ^g AI message · ^t AI provider · esc back"
+        "enter commit · ^j newline · ^a amend"
     }
 
     fn preferred_height(&self) -> Option<u16> {

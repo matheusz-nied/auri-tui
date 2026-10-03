@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use ratatui::backend::Backend;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -20,6 +20,7 @@ use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
 use crate::components::file_tree::FileTree;
 use crate::components::file_view::FileView;
+use crate::components::help::Help;
 use crate::components::history::History;
 use crate::components::hitbox::Hitboxes;
 use crate::components::view_tabs;
@@ -28,6 +29,7 @@ use crate::event::{AppEvent, Events};
 use crate::fs::{FileStamp, FsBackend};
 use crate::git::{DiffDoc, DiffSource, GitBackend};
 use crate::git_worker::{self, Done, GitJob, GitJobs, GitResult};
+use crate::keymap::{self, Command, HelpSection};
 use crate::layout::{self, Sidebar, SidebarView};
 use crate::prefs::{Preferences, PrefsStore};
 
@@ -212,7 +214,10 @@ impl App {
                 (PanelId::DiffView, Box::new(DiffView::default())),
                 (PanelId::FileView, Box::new(FileView::default())),
             ],
-            overlays: vec![Box::new(ConfirmDialog::default())],
+            overlays: vec![
+                Box::new(ConfirmDialog::default()),
+                Box::new(Help::default()),
+            ],
             focus: PanelId::Changes,
             hovered: None,
             frame_area: Rect::default(),
@@ -528,6 +533,7 @@ impl App {
             | Action::FileLoaded(_)
             | Action::FileReloaded(_)
             | Action::ExplorerCollapseAll
+            | Action::ShowHelp(_)
             | Action::PreferencesChanged(_) => {}
         }
     }
@@ -853,12 +859,22 @@ impl App {
         self.ensure_focus_visible();
     }
 
+    /// Where `keymap::lookup` stands: overlay open, typing, AI running.
+    fn key_ctx(&self) -> keymap::Ctx {
+        keymap::Ctx {
+            overlay: self.overlays.iter().any(|o| o.captures_input()),
+            typing: self.focus == PanelId::CommitInput,
+            ai_running: self.ai.is_running(),
+        }
+    }
+
+    /// A global key (`keymap::GLOBAL`) runs its command; anything else goes
+    /// to the open overlay or the focused panel.
     fn on_key(&mut self, key: KeyEvent) {
         // Any key press dismisses the last info/error message.
         self.message = None;
-        // Ctrl-C always quits, even while a modal overlay is open.
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            self.enqueue(Action::Quit);
+        if let Some(command) = keymap::lookup(&key, self.key_ctx()) {
+            self.run_command(command);
             return;
         }
         // A modal overlay owns all input while it captures.
@@ -868,105 +884,62 @@ impl App {
             }
             return;
         }
-        // AI keys work from every panel — including while typing a message.
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('g') => {
-                    self.enqueue(Action::GenerateCommitMessage);
-                    return;
-                }
-                KeyCode::Char('t') => {
-                    self.enqueue(Action::ToggleAiProvider);
-                    return;
-                }
-                _ => {}
-            }
-        }
-        // Esc cancels an in-flight generation before its other meanings.
-        if key.code == KeyCode::Esc && self.ai.is_running() {
-            self.enqueue(Action::CancelCommitMessage);
-            return;
-        }
-        let commit_focused = self.focus == PanelId::CommitInput;
-        // When the commit input is focused, only these keys are global —
-        // everything else is text input.
-        let global = if commit_focused {
-            matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc)
-                || key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c')
-        } else {
-            true
-        };
-        if global {
-            match (key.code, key.modifiers) {
-                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                    self.enqueue(Action::Quit);
-                    return;
-                }
-                (KeyCode::Tab, _) => {
-                    self.enqueue(Action::FocusNext);
-                    return;
-                }
-                (KeyCode::BackTab, _) => {
-                    self.enqueue(Action::FocusPrev);
-                    return;
-                }
-                (KeyCode::Esc, _) if commit_focused => {
-                    self.enqueue(Action::FocusNext);
-                    return;
-                }
-                _ if !commit_focused => match key.code {
-                    KeyCode::Char('q') => {
-                        self.enqueue(Action::Quit);
-                        return;
-                    }
-                    KeyCode::Char('r') => {
-                        self.enqueue(Action::Refresh);
-                        return;
-                    }
-                    KeyCode::Char('b') => {
-                        self.toggle_sidebar();
-                        return;
-                    }
-                    KeyCode::Char('[') => {
-                        self.sidebar.shrink(self.main_area.width);
-                        return;
-                    }
-                    KeyCode::Char(']') => {
-                        self.sidebar.grow(self.main_area.width);
-                        return;
-                    }
-                    // Reveal the sidebar (in the right view) when focusing a
-                    // panel inside it.
-                    KeyCode::Char('e') => {
-                        self.show_view(SidebarView::Explorer, PanelId::Explorer);
-                        return;
-                    }
-                    KeyCode::Char('c') => {
-                        self.show_view(SidebarView::SourceControl, PanelId::CommitInput);
-                        return;
-                    }
-                    KeyCode::Char('1') => {
-                        self.show_view(SidebarView::SourceControl, PanelId::Changes);
-                        return;
-                    }
-                    KeyCode::Char('3') => {
-                        self.show_view(SidebarView::SourceControl, PanelId::History);
-                        return;
-                    }
-                    KeyCode::Char('2') => {
-                        self.enqueue(Action::Focus(self.main_panel()));
-                        return;
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
         if let Some((_, comp)) = self.components.iter_mut().find(|(id, _)| *id == self.focus) {
             if let Some(action) = comp.handle_key(key) {
                 self.enqueue(action);
             }
         }
+    }
+
+    fn run_command(&mut self, command: Command) {
+        match command {
+            Command::Quit => self.enqueue(Action::Quit),
+            Command::FocusNext => self.enqueue(Action::FocusNext),
+            Command::FocusPrev => self.enqueue(Action::FocusPrev),
+            Command::Refresh => self.enqueue(Action::Refresh),
+            Command::ToggleSidebar => self.toggle_sidebar(),
+            Command::ShrinkSidebar => self.sidebar.shrink(self.main_area.width),
+            Command::GrowSidebar => self.sidebar.grow(self.main_area.width),
+            // Reveal the sidebar (in the right view) when focusing a panel
+            // inside it.
+            Command::ShowExplorer => self.show_view(SidebarView::Explorer, PanelId::Explorer),
+            Command::FocusCommit => {
+                self.show_view(SidebarView::SourceControl, PanelId::CommitInput)
+            }
+            Command::FocusChanges => self.show_view(SidebarView::SourceControl, PanelId::Changes),
+            Command::FocusHistory => self.show_view(SidebarView::SourceControl, PanelId::History),
+            Command::FocusMain => self.enqueue(Action::Focus(self.main_panel())),
+            Command::GenerateCommitMessage => self.enqueue(Action::GenerateCommitMessage),
+            Command::ToggleAiProvider => self.enqueue(Action::ToggleAiProvider),
+            Command::CancelAi => self.enqueue(Action::CancelCommitMessage),
+            Command::Help => self.enqueue(Action::ShowHelp(self.help_sections())),
+        }
+    }
+
+    /// The help screen: global keys, mouse, then each panel's own keys —
+    /// all from the same tables the keys and the status bar use.
+    fn help_sections(&self) -> Vec<HelpSection> {
+        let mut sections = vec![
+            HelpSection {
+                title: "Global".to_string(),
+                rows: keymap::help_rows(),
+            },
+            HelpSection {
+                title: "Mouse".to_string(),
+                rows: keymap::MOUSE
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            },
+        ];
+        sections.extend(self.components.iter().filter_map(|(id, comp)| {
+            let rows = keymap::hint_rows(comp.hints());
+            (!rows.is_empty()).then(|| HelpSection {
+                title: id.name().to_string(),
+                rows,
+            })
+        }));
+        sections
     }
 
     /// Pasted text goes to the focused panel — never to an overlay, where
@@ -1110,13 +1083,9 @@ impl App {
         } else {
             self.branch.clone()
         };
-        // Global keys minus `q` while typing a commit message (q is text
-        // there), then the focused panel's own hints.
-        let global = if self.focus == PanelId::CommitInput {
-            "tab focus · r refresh"
-        } else {
-            "q quit · tab focus · r refresh · e files · 1 git · b sidebar · [/] resize"
-        };
+        // The global keys live right now (letters are text while typing a
+        // commit message), then the focused panel's own hints.
+        let global = keymap::status_hints(self.key_ctx());
         let panel_hints = self
             .components
             .iter()
@@ -1151,7 +1120,9 @@ mod tests {
     use crate::fs::{DirEntry, EntryKind, FileDoc};
     use crate::git::{Commit, CommitFile, DiffDoc, FileChange, Section};
     use crate::prefs::{FileStore, LayoutPrefs, MemoryStore};
-    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::crossterm::event::{
+        KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use ratatui::layout::Rect;
     use std::cell::RefCell;
     use std::path::PathBuf;
@@ -2048,6 +2019,55 @@ mod tests {
         app.dispatch();
         assert_eq!(calls.get(), 2);
         assert!(!app.refresh_in_flight && !app.refresh_again);
+    }
+
+    #[test]
+    fn question_mark_opens_the_generated_help_which_owns_the_keys() {
+        let mut app = app(MemoryStore::new(None));
+        app.dispatch();
+        app.on_key(KeyEvent::from(KeyCode::Char('?')));
+        app.dispatch();
+        assert!(app.key_ctx().overlay);
+        let text = screen(&mut app);
+        for want in [
+            "Keys",
+            "Global",
+            "Mouse",
+            "Changes",
+            "this help",
+            "stage/unstage",
+        ] {
+            assert!(text.contains(want), "{want} missing:\n{text}");
+        }
+        // Keys go to the help, not to the app: `q` closes it, no quit.
+        app.on_key(KeyEvent::from(KeyCode::Char('q')));
+        app.dispatch();
+        assert!(app.running && !app.key_ctx().overlay);
+        // Ctrl-C quits even with the help open.
+        app.on_key(KeyEvent::from(KeyCode::Char('?')));
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        app.dispatch();
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn status_bar_hints_follow_the_focus() {
+        let mut app = app(MemoryStore::new(None));
+        app.dispatch();
+        let bar = |app: &mut App| screen(app).lines().last().unwrap().to_string();
+        let nav = bar(&mut app);
+        assert!(nav.contains("q quit · ? help"), "{nav}");
+        // In the commit box letters are text: no `q quit`, `?` is typed.
+        app.on_key(KeyEvent::from(KeyCode::Char('c')));
+        let typing = bar(&mut app);
+        assert!(
+            typing.contains("tab focus · esc back") && !typing.contains("q quit"),
+            "{typing}"
+        );
+        app.on_key(KeyEvent::from(KeyCode::Char('?')));
+        app.dispatch();
+        assert!(!app.key_ctx().overlay);
+        assert!(screen(&mut app).contains("│?"), "the ? went into the box");
     }
 
     #[test]

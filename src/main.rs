@@ -29,7 +29,8 @@ Options:
   -V, --version  Print version
 
 Inside auri: e = files, c = source control, 2 = main pane,
-o = edit in $EDITOR, b = toggle sidebar, Tab = next panel, q = quit.";
+o = edit in $EDITOR, b = toggle sidebar, Tab = next panel, q = quit,
+? = all keys.";
 
 fn main() -> Result<()> {
     let arg = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
