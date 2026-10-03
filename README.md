@@ -63,6 +63,10 @@ In the tree, `l`/`h` expand/collapse.
 
 **Changes** — `Space`/`s` stage or unstage, `a` stage all, `d` discard.
 
+**Edit** — `o` opens the selected file (changes, tree, file viewer or diff)
+in `$VISUAL`/`$EDITOR` (default `vi`), at the line in view when the editor
+supports it; auri resumes when the editor exits.
+
 **Diff / file viewer** — `j`/`k` scroll, `PgUp`/`PgDn`, `h`/`l` scroll
 sideways, `n`/`N` next/previous change (diff).
 

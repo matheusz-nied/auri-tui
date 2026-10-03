@@ -21,6 +21,7 @@ First public release.
 - Side-by-side diff viewer with syntax highlighting and jump-to-change.
 - Commit history panel with per-commit file diffs.
 - Commit message input; empty commits are disabled.
+- `o` opens the selected file in `$VISUAL`/`$EDITOR`, at the line in view.
 - Optional AI commit-message drafts via Codex CLI or opencode (`Ctrl-G`).
 - Resizable, collapsible sidebar; layout and settings persisted in
   `~/.config/auri/preferences.toml`.

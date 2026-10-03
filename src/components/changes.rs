@@ -244,6 +244,10 @@ impl Component for Changes {
                 .filter(can_discard)
                 .map(|f| discard_confirm(&f)),
             KeyCode::Char('a') => Some(Action::StageAll),
+            KeyCode::Char('o') => self.selected_file().map(|f| Action::OpenInEditor {
+                path: f.path,
+                line: None,
+            }),
             KeyCode::Enter => Some(Action::Focus(PanelId::DiffView)),
             _ => None,
         }
@@ -324,7 +328,7 @@ impl Component for Changes {
     }
 
     fn hints(&self) -> &'static str {
-        "space stage/unstage · d discard · a stage all · enter diff · c message"
+        "space stage/unstage · d discard · a stage all · enter diff · o edit · c message"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -680,5 +684,15 @@ mod tests {
             matches!(&out, Some(Action::SelectFile(f)) if f.path == "g.rs"),
             "expected SelectFile(g.rs), got {out:?}"
         );
+    }
+
+    #[test]
+    fn o_edits_the_selected_file() {
+        let mut c = Changes::default();
+        c.update(&Action::StatusLoaded(vec![fc("a.rs", Section::Unstaged)]));
+        assert!(matches!(
+            c.handle_key(key(KeyCode::Char('o'))),
+            Some(Action::OpenInEditor { path, line: None }) if path == "a.rs"
+        ));
     }
 }

@@ -3,6 +3,7 @@ pub mod ai;
 pub mod app;
 pub mod component;
 pub mod components;
+pub mod editor;
 pub mod event;
 pub mod fs;
 pub mod git;

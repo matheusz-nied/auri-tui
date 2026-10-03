@@ -21,6 +21,7 @@ use crate::components::file_view::FileView;
 use crate::components::history::{History, HISTORY_PAGE};
 use crate::components::hitbox::Hitboxes;
 use crate::components::view_tabs;
+use crate::editor::EditorLauncher;
 use crate::event::{AppEvent, Events};
 use crate::fs::{FileStamp, FsBackend};
 use crate::git::{DiffSource, GitBackend, Section};
@@ -54,6 +55,15 @@ impl TerminalHandoff for NoHandoff {
     fn reclaim(&mut self) {}
 }
 
+/// No editor to run (tests): opening one is an error.
+struct NoEditor;
+
+impl EditorLauncher for NoEditor {
+    fn open(&mut self, _path: &str, _line: Option<usize>) -> Result<()> {
+        anyhow::bail!("no editor available")
+    }
+}
+
 /// Owns the components, the focus state, the last-frame layout rects and the
 /// action queue. It is the *only* place where `GitBackend` and `FsBackend`
 /// are called: side effects requested by components (`Refresh`,
@@ -66,8 +76,11 @@ pub struct App {
     fs: Box<dyn FsBackend>,
     /// Background AI commit-message generation; polled once per loop.
     ai: Box<dyn AiRunner>,
-    /// Hands the terminal to `git commit` when it may prompt.
+    /// Hands the terminal to `git commit` when it may prompt, and to the
+    /// editor.
     terminal: Box<dyn TerminalHandoff>,
+    /// Runs `$VISUAL`/`$EDITOR` for `OpenInEditor`.
+    editor: Box<dyn EditorLauncher>,
     /// The screen was used by someone else: clear before the next draw.
     needs_clear: bool,
     events: Events,
@@ -159,6 +172,7 @@ impl App {
             fs,
             ai: Box::new(ProcessRunner::default()),
             terminal: Box::new(NoHandoff),
+            editor: Box::new(NoEditor),
             needs_clear: false,
             events: Events::default(),
             components: vec![
@@ -219,6 +233,13 @@ impl App {
     /// default does nothing — fine without a real terminal).
     pub fn with_terminal_handoff(mut self, t: Box<dyn TerminalHandoff>) -> Self {
         self.terminal = t;
+        self
+    }
+
+    /// Set how files are opened for editing (the default refuses — there
+    /// is no terminal to give an editor in tests).
+    pub fn with_editor(mut self, e: Box<dyn EditorLauncher>) -> Self {
+        self.editor = e;
         self
     }
 
@@ -400,6 +421,7 @@ impl App {
                     Err(e) => self.enqueue(Action::Error(format!("open: {e}"))),
                 }
             }
+            Action::OpenInEditor { path, line } => self.open_in_editor(&path, line),
             Action::LoadHistory { skip } => match self.git.log(skip, HISTORY_PAGE) {
                 Ok(commits) => self.enqueue(Action::HistoryLoaded { skip, commits }),
                 Err(e) => self.enqueue(Action::Error(format!("log: {e}"))),
@@ -627,6 +649,32 @@ impl App {
             format!("AI provider: {}", self.prefs.ai.provider.name()),
             false,
         );
+    }
+
+    /// Run the editor on `path` with the terminal handed over, then refresh
+    /// so the edit shows up in the status, diff and file viewer.
+    fn open_in_editor(&mut self, path: &str, line: Option<usize>) {
+        match self.fs.stamp(path) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                self.enqueue(Action::Error(format!("edit: {path} no longer exists")));
+                return;
+            }
+            Err(e) => {
+                self.enqueue(Action::Error(format!("edit: {e}")));
+                return;
+            }
+        }
+        let abs = self.git.root().join(path);
+        self.terminal.release();
+        let result = self.editor.open(&abs.to_string_lossy(), line);
+        self.terminal.reclaim();
+        self.needs_clear = true;
+        if let Err(e) = result {
+            self.enqueue(Action::Error(format!("edit: {e}")));
+        }
+        // Even a failed editor may have saved.
+        self.enqueue(Action::Refresh);
     }
 
     /// Reload the diff of the currently selected file, if it still exists in
@@ -1634,6 +1682,79 @@ mod tests {
         assert!(log.borrow().is_empty());
         assert!(!app.needs_clear);
         assert!(matches!(&app.message, Some((m, false)) if m == "Committed"));
+    }
+
+    /// (path, line) of each editor run.
+    type Opened = Rc<RefCell<Vec<(String, Option<usize>)>>>;
+
+    /// Records each open in the handoff log and "saves" the file.
+    struct FakeEditor {
+        log: CallLog,
+        fs: FakeFs,
+        opened: Opened,
+    }
+
+    impl EditorLauncher for FakeEditor {
+        fn open(&mut self, path: &str, line: Option<usize>) -> Result<()> {
+            self.log.borrow_mut().push("edit");
+            self.opened.borrow_mut().push((path.to_string(), line));
+            self.fs.write("src/main.rs", "fn main() { edited() }");
+            Ok(())
+        }
+    }
+
+    fn editor_app() -> (App, CallLog, Opened) {
+        let (app, fs) = explorer_app(MemoryStore::new(None));
+        let log = CallLog::default();
+        let opened = Rc::default();
+        let app = app
+            .with_terminal_handoff(Box::new(FakeHandoff(log.clone())))
+            .with_editor(Box::new(FakeEditor {
+                log: log.clone(),
+                fs,
+                opened: Rc::clone(&opened),
+            }));
+        (app, log, opened)
+    }
+
+    #[test]
+    fn editor_runs_with_the_terminal_handed_over_then_refreshes() {
+        let (mut app, log, opened) = editor_app();
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.enqueue(Action::OpenFile("src/main.rs".to_string()));
+        app.dispatch();
+        // `o` in the file viewer edits at the top visible line.
+        app.on_key(KeyEvent::from(KeyCode::Char('2')));
+        app.dispatch();
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        app.dispatch();
+        assert_eq!(*log.borrow(), ["release", "edit", "reclaim"]);
+        assert_eq!(
+            *opened.borrow(),
+            [("/repo/src/main.rs".to_string(), Some(1))]
+        );
+        assert!(
+            app.needs_clear,
+            "the next frame must be redrawn from scratch"
+        );
+        // The refresh after the editor exits picks up the saved file.
+        assert!(screen(&mut app).contains("edited()"));
+    }
+
+    #[test]
+    fn editing_a_missing_file_errors_without_running_the_editor() {
+        let (mut app, log, _) = editor_app();
+        app.enqueue(Action::OpenInEditor {
+            path: "gone.rs".to_string(),
+            line: None,
+        });
+        app.dispatch();
+        assert!(log.borrow().is_empty());
+        assert!(
+            matches!(&app.message, Some((m, true)) if m.contains("no longer exists")),
+            "{:?}",
+            app.message
+        );
     }
 
     #[test]

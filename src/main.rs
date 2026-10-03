@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use auri_tui::app::{App, TerminalHandoff};
+use auri_tui::editor::ShellEditor;
 use auri_tui::fs::local::LocalFs;
 use auri_tui::git::cli::{resolve_toplevel, CliGit};
 use auri_tui::prefs::{FileStore, MemoryStore, PrefsStore};
@@ -26,7 +27,7 @@ Options:
   -V, --version  Print version
 
 Inside auri: e = files, c = source control, 2 = main pane,
-b = toggle sidebar, Tab = next panel, q = quit.";
+o = edit in $EDITOR, b = toggle sidebar, Tab = next panel, q = quit.";
 
 fn main() -> Result<()> {
     let arg = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
@@ -58,7 +59,8 @@ fn main() -> Result<()> {
         Box::new(LocalFs::new(root)),
         store,
     )
-    .with_terminal_handoff(Box::new(Crossterm));
+    .with_terminal_handoff(Box::new(Crossterm))
+    .with_editor(Box::new(ShellEditor));
     let result = app.run(&mut terminal);
 
     let _ = execute!(stdout(), DisableMouseCapture);
@@ -67,7 +69,8 @@ fn main() -> Result<()> {
 }
 
 /// Undoes/redoes what `ratatui::init` + `EnableMouseCapture` set up, so a
-/// prompting `git commit` (GPG pinentry, hooks) gets a normal terminal.
+/// prompting `git commit` (GPG pinentry, hooks) or the editor gets a normal
+/// terminal.
 struct Crossterm;
 
 impl TerminalHandoff for Crossterm {

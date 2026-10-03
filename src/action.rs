@@ -106,6 +106,13 @@ pub enum Action {
     /// Open a workspace file in the file viewer; `App` reads it, makes the
     /// viewer own the main pane and broadcasts `FileLoaded`.
     OpenFile(String),
+    /// Edit a workspace file in `$VISUAL`/`$EDITOR`, at `line` (1-based)
+    /// when given. `App` hands the terminal over, waits for the editor to
+    /// exit, then refreshes.
+    OpenInEditor {
+        path: String,
+        line: Option<usize>,
+    },
     /// A freshly opened file (receivers reset their scroll).
     FileLoaded(FileDoc),
     /// The open file changed on disk (receivers keep their scroll).

@@ -56,6 +56,30 @@ impl Default for DiffView {
 }
 
 impl DiffView {
+    /// `o`: edit the shown file. A working-tree diff opens at the first
+    /// changed line in view (else the top line), on the new side — for a
+    /// removed-only row, the next new-side line. A commit diff's line
+    /// numbers are the commit's, not the worktree's, so it opens at the top.
+    fn edit_action(&self) -> Option<Action> {
+        let (path, line) = match self.source.as_ref()? {
+            DiffSource::Working(file) => {
+                let line = self.doc.as_ref().and_then(|doc| {
+                    let rows = &doc.rows;
+                    let end = (self.scroll_y + self.view_height).min(rows.len());
+                    let start = (self.scroll_y..end)
+                        .find(|&i| rows[i].kind == RowKind::Changed)
+                        .unwrap_or(self.scroll_y);
+                    rows.iter()
+                        .skip(start)
+                        .find_map(|r| side_cell(r, 1).map(|c| c.line_no))
+                });
+                (file.path.clone(), line)
+            }
+            DiffSource::Commit { file, .. } => (file.path.clone(), None),
+        };
+        Some(Action::OpenInEditor { path, line })
+    }
+
     /// `fresh` = a newly selected file: scroll resets to the first changed
     /// block. A reload of the same file keeps the scroll position (clamped).
     fn set_doc(&mut self, doc: DiffDoc, fresh: bool) {
@@ -224,6 +248,7 @@ impl Component for DiffView {
             KeyCode::Char('N') => self.jump_to_change(false),
             KeyCode::Char('h') | KeyCode::Left => self.scroll_x = self.scroll_x.saturating_sub(4),
             KeyCode::Char('l') | KeyCode::Right => self.scroll_x += 4,
+            KeyCode::Char('o') => return self.edit_action(),
             _ => {}
         }
         self.clamp_scroll();
@@ -280,7 +305,7 @@ impl Component for DiffView {
     }
 
     fn hints(&self) -> &'static str {
-        "n/N next/prev change · h/l scroll"
+        "n/N next/prev change · h/l scroll · o edit"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -592,5 +617,44 @@ mod tests {
         v.update(&Action::StatusLoaded(vec![]));
         assert!(v.doc.is_some());
         assert!(matches!(v.source, Some(DiffSource::Commit { .. })));
+    }
+
+    #[test]
+    fn o_edits_at_the_change_or_top_line_in_view() {
+        let key = |c| KeyEvent::from(KeyCode::Char(c));
+        let mut v = DiffView {
+            view_height: 5,
+            ..Default::default()
+        };
+        assert!(v.handle_key(key('o')).is_none(), "nothing shown");
+        // Rows 0-1 and 7 changed; 12 is removed-only (no new side).
+        let mut d = doc(20);
+        d.rows[7].kind = RowKind::Changed;
+        d.rows[12].right = None;
+        v.update(&Action::SelectFile(file()));
+        v.update(&Action::DiffLoaded(d));
+        let edit_line = |v: &mut DiffView, scroll| {
+            v.scroll_y = scroll;
+            match v.handle_key(key('o')) {
+                Some(Action::OpenInEditor { path, line }) if path == "f.rs" => line,
+                other => panic!("{other:?}"),
+            }
+        };
+        // The first change in view wins over the top line.
+        assert_eq!(edit_line(&mut v, 4), Some(8));
+        // No change in view: the top line, or the next new-side line.
+        assert_eq!(edit_line(&mut v, 13), Some(14));
+        assert_eq!(edit_line(&mut v, 12), Some(14));
+        // A commit diff's line numbers aren't the worktree's.
+        let (c, cf) = commit_file();
+        v.update(&Action::SelectCommitFile {
+            commit: c,
+            file: cf,
+        });
+        v.update(&Action::DiffLoaded(doc(20)));
+        assert!(matches!(
+            v.handle_key(key('o')),
+            Some(Action::OpenInEditor { path, line: None }) if path == "f.rs"
+        ));
     }
 }

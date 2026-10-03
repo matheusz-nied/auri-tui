@@ -83,6 +83,13 @@ impl Component for FileView {
                 self.scroll_x = self.scroll_x.saturating_sub(H_STEP)
             }
             KeyCode::Char('l') | KeyCode::Right => self.scroll_x += H_STEP,
+            // Edit at the line at the top of the view.
+            KeyCode::Char('o') => {
+                return self.doc.as_ref().map(|d| Action::OpenInEditor {
+                    path: d.path.clone(),
+                    line: Some(self.scroll_y + 1),
+                });
+            }
             _ => {}
         }
         self.clamp_scroll();
@@ -120,7 +127,7 @@ impl Component for FileView {
     }
 
     fn hints(&self) -> &'static str {
-        "j/k/g/G scroll · h/l sideways"
+        "j/k/g/G scroll · h/l sideways · o edit"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {

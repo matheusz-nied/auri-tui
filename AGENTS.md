@@ -29,6 +29,9 @@ fs/            workspace reads: model types + FsBackend trait; `local` is
 components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                file_tree.rs, file_view.rs, hitbox.rs, confirm_dialog.rs
                (modal overlay example)
+editor.rs      `o` = edit in `$VISUAL`/`$EDITOR` (else `vi`): pure
+               `command` (editor + per-editor line-jump args) +
+               `EditorLauncher` trait; `ShellEditor` runs it via `sh -c`
 highlight.rs   syntax highlighting (syntect + two-face = bat's grammars,
                embedded, OneHalfDark): pure, incremental `Highlighter`
 text.rs        display width in terminal columns (CJK/emoji = 2): `width`,
@@ -46,7 +49,7 @@ Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
 `ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`,
 `LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`, `LoadDirs`,
-`OpenFile`) are executed by `App` via `Box<dyn GitBackend>` /
+`OpenFile`, `OpenInEditor`) are executed by `App` via `Box<dyn GitBackend>` /
 `Box<dyn FsBackend>` → results (`StatusLoaded`, `DiffLoaded`,
 `HistoryLoaded`, `CommitFilesLoaded`, `DirLoaded`, `FileLoaded`,
 `FileReloaded`, `Error`) are broadcast to every component's `update`.
@@ -60,6 +63,16 @@ is worktree vs HEAD), `Staged`, `Unstaged`, `Untracked` (code `U`).
 `release` leaves raw mode/alt screen, `reclaim` re-enters and forces a full
 redraw) when `commit_may_prompt()` — `commit.gpgsign` or an executable
 commit hook — so pinentry/interactive hooks get a usable tty.
+
+`OpenInEditor { path, line }` (`o` in Changes, the tree, the file viewer
+and the diff) always hands the terminal over: `App` checks the file still
+exists (`fs.stamp`), runs `Box<dyn EditorLauncher>` (fake it via
+`with_editor`; the default refuses) on the absolute path, reclaims, then
+`Refresh`es so the edit shows up. Lines: the viewer's top line; the diff's
+first changed new-side line in view (else its top line); commit diffs and
+lists open without one. `+N` is passed only to editors whose syntax is
+known (vi family, nano, emacs…; `path:N` for hx/subl/zed; `--goto` for
+VS Code forks).
 
 Status-bar messages (`App::notify`) clear on the next key press or after
 `MESSAGE_TTL` (errors: `ERROR_TTL`).
