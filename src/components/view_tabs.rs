@@ -44,16 +44,14 @@ pub fn render(f: &mut Frame, area: Rect, active: SidebarView, hits: &mut Hitboxe
         let label: String = label.chars().take(w).collect();
         let left = (w - label.chars().count()) / 2;
         let right = w - left - label.chars().count();
-        // The active tab merges into the page and carries a gold underline
-        // under its label (the landing page's tab style); the other recedes
-        // onto the bar.
+        // The active tab is lifted off the bar (lighter fill) with a bold,
+        // underlined gold label; the other recedes into the bar, muted.
         let (bg, label_style) = if view == active {
             (
-                theme::BG,
+                theme::SEL_FOCUS_BG,
                 Style::default()
-                    .fg(theme::INK)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                    .underline_color(theme::GOLD),
+                    .fg(theme::GOLD)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             )
         } else {
             (theme::BG_BAR, Style::default().fg(theme::MUTED))
