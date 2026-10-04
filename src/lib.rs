@@ -1,9 +1,10 @@
 pub mod action;
 pub mod ai;
 pub mod app;
+pub mod buffer;
+pub mod clipboard;
 pub mod component;
 pub mod components;
-pub mod editor;
 pub mod event;
 pub mod fs;
 pub mod git;

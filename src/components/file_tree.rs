@@ -259,15 +259,6 @@ impl Component for FileTree {
             KeyCode::Enter | KeyCode::Char(' ') => return self.activate(),
             KeyCode::Char('l') | KeyCode::Right => return self.step_in(),
             KeyCode::Char('h') | KeyCode::Left => self.step_out(),
-            KeyCode::Char('o') => {
-                return self
-                    .selected_row()
-                    .filter(|r| r.kind == EntryKind::File)
-                    .map(|r| Action::OpenInEditor {
-                        path: r.path.clone(),
-                        line: None,
-                    });
-            }
             _ => {}
         }
         None
@@ -338,7 +329,7 @@ impl Component for FileTree {
     }
 
     fn hints(&self) -> &'static str {
-        "enter open/toggle · h/l collapse/expand · o edit"
+        "enter open/toggle · h/l collapse/expand"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -444,6 +435,7 @@ mod tests {
             lines: vec![],
             binary: false,
             truncated: false,
+            source: None,
         }
     }
 
@@ -642,17 +634,5 @@ mod tests {
         term.draw(|f| t.render(f, area, true)).unwrap();
         // Row 1 = `src` (collapsed): " ▸ " then the closed-folder glyph.
         assert_eq!(term.backend().buffer()[(4, 1)].symbol(), "\u{f07b}");
-    }
-
-    #[test]
-    fn o_edits_files_but_not_folders() {
-        let mut t = tree();
-        assert_eq!(t.selected_row().unwrap().path, "src");
-        assert!(t.handle_key(key(KeyCode::Char('o'))).is_none());
-        t.handle_key(key(KeyCode::Char('j')));
-        assert!(matches!(
-            t.handle_key(key(KeyCode::Char('o'))),
-            Some(Action::OpenInEditor { path, line: None }) if path == "README.md"
-        ));
     }
 }

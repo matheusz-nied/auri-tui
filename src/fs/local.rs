@@ -1,14 +1,14 @@
 //! `FsBackend` over the real filesystem, rooted at the repository toplevel.
 
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
 use super::{
     decode_file, join, sort_entries, validate_rel, DirEntry, EntryKind, FileDoc, FileStamp,
-    FsBackend, MAX_FILE_BYTES,
+    FsBackend, WriteOutcome, MAX_FILE_BYTES,
 };
 
 /// Reads the workspace under a fixed root. Every path is validated with
@@ -95,6 +95,60 @@ impl FsBackend for LocalFs {
             Err(e) => Err(e).with_context(|| format!("reading {path}")),
         }
     }
+
+    /// Write a temporary file next to the target, then rename it over the
+    /// target: a crash or full disk mid-save never leaves a half-written
+    /// file. A symlink is resolved first so the link itself survives.
+    fn write_file(
+        &self,
+        path: &str,
+        contents: &str,
+        expected: Option<FileStamp>,
+    ) -> Result<WriteOutcome> {
+        if path.is_empty() {
+            bail!("can't save the root directory");
+        }
+        if let Some(want) = expected {
+            let now = self.stamp(path)?;
+            if now != Some(want) {
+                return Ok(WriteOutcome::Conflict { stamp: now });
+            }
+        }
+        let abs = self.abs(path)?;
+        let target = match fs::symlink_metadata(&abs) {
+            Ok(m) if m.file_type().is_symlink() => {
+                fs::canonicalize(&abs).with_context(|| format!("saving {path}: broken link"))?
+            }
+            _ => abs,
+        };
+        let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+            bail!("saving {path}: invalid path");
+        };
+        let tmp = dir.join(format!(
+            ".{}.auri-save-{}",
+            name.to_string_lossy(),
+            std::process::id()
+        ));
+        // Keep the mode (an executable script stays executable).
+        let perms = fs::metadata(&target).ok().map(|m| m.permissions());
+        let written = (|| -> std::io::Result<()> {
+            let mut file = fs::File::create(&tmp)?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+            if let Some(perms) = perms {
+                fs::set_permissions(&tmp, perms)?;
+            }
+            fs::rename(&tmp, &target)
+        })();
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("saving {path}"));
+        }
+        match self.stamp(path)? {
+            Some(stamp) => Ok(WriteOutcome::Written(stamp)),
+            None => bail!("saving {path}: file vanished right after writing"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +211,77 @@ mod tests {
         assert_ne!(a, b);
         std::fs::remove_file(d.path().join("README.md")).unwrap();
         assert_eq!(fs.stamp("README.md").unwrap(), None);
+    }
+
+    #[test]
+    fn write_file_replaces_contents_and_returns_the_new_stamp() {
+        let (d, fs) = setup();
+        let before = fs.stamp("README.md").unwrap();
+        let WriteOutcome::Written(stamp) = fs.write_file("README.md", "# new\r\n", before).unwrap()
+        else {
+            panic!("conflict")
+        };
+        assert_eq!(
+            std::fs::read(d.path().join("README.md")).unwrap(),
+            b"# new\r\n"
+        );
+        assert_eq!(fs.stamp("README.md").unwrap(), Some(stamp));
+        // No temporary file left behind.
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(names.iter().all(|n| !n.contains("auri-save")), "{names:?}");
+    }
+
+    #[test]
+    fn write_file_refuses_when_changed_on_disk_unless_forced() {
+        let (d, fs) = setup();
+        let opened = fs.stamp("README.md").unwrap();
+        std::fs::write(d.path().join("README.md"), "# someone else, longer\n").unwrap();
+        let out = fs.write_file("README.md", "mine", opened).unwrap();
+        assert!(matches!(out, WriteOutcome::Conflict { stamp: Some(_) }));
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("README.md")).unwrap(),
+            "# someone else, longer\n"
+        );
+        std::fs::remove_file(d.path().join("README.md")).unwrap();
+        let out = fs.write_file("README.md", "mine", opened).unwrap();
+        assert_eq!(out, WriteOutcome::Conflict { stamp: None });
+        // Forced: recreated.
+        assert!(matches!(
+            fs.write_file("README.md", "mine", None).unwrap(),
+            WriteOutcome::Written(_)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("README.md")).unwrap(),
+            "mine"
+        );
+        assert!(fs.write_file("../escape", "x", None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_keeps_mode_and_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (d, fs) = setup();
+        let script = d.path().join("run.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fs.write_file("run.sh", "#!/bin/sh\necho hi\n", None)
+            .unwrap();
+        let mode = std::fs::metadata(&script).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+
+        symlink("README.md", d.path().join("link.md")).unwrap();
+        fs.write_file("link.md", "via link", None).unwrap();
+        assert!(std::fs::symlink_metadata(d.path().join("link.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("README.md")).unwrap(),
+            "via link"
+        );
     }
 }

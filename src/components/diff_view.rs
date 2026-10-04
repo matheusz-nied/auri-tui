@@ -60,10 +60,10 @@ impl Default for DiffView {
 }
 
 impl DiffView {
-    /// `o`: edit the shown file. A working-tree diff opens at the first
-    /// changed line in view (else the top line), on the new side — for a
-    /// removed-only row, the next new-side line. A commit diff's line
-    /// numbers are the commit's, not the worktree's, so it opens at the top.
+    /// `i`: edit the shown file in the app. A working-tree diff starts at
+    /// the first changed line in view (else the top line), on the new side
+    /// — for a removed-only row, the next new-side line. A commit diff's
+    /// line numbers are the commit's, not the worktree's: top of the file.
     fn edit_action(&self) -> Option<Action> {
         let (path, line) = match self.source.as_ref()? {
             DiffSource::Working(file) => {
@@ -81,7 +81,7 @@ impl DiffView {
             }
             DiffSource::Commit { file, .. } => (file.path.clone(), None),
         };
-        Some(Action::OpenInEditor { path, line })
+        Some(Action::EditFile { path, line })
     }
 
     /// `fresh` = a newly selected file: scroll resets to the first changed
@@ -252,7 +252,7 @@ impl Component for DiffView {
             KeyCode::Char('N') => self.jump_to_change(false),
             KeyCode::Char('h') | KeyCode::Left => self.scroll_x = self.scroll_x.saturating_sub(4),
             KeyCode::Char('l') | KeyCode::Right => self.scroll_x += 4,
-            KeyCode::Char('o') => return self.edit_action(),
+            KeyCode::Char('i') => return self.edit_action(),
             _ => {}
         }
         self.clamp_scroll();
@@ -309,7 +309,7 @@ impl Component for DiffView {
     }
 
     fn hints(&self) -> &'static str {
-        "n/N next/prev change · h/l scroll · o edit"
+        "n/N next/prev change · h/l scroll · i edit"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -629,13 +629,13 @@ mod tests {
     }
 
     #[test]
-    fn o_edits_at_the_change_or_top_line_in_view() {
+    fn i_edits_at_the_change_or_top_line_in_view() {
         let key = |c| KeyEvent::from(KeyCode::Char(c));
         let mut v = DiffView {
             view_height: 5,
             ..Default::default()
         };
-        assert!(v.handle_key(key('o')).is_none(), "nothing shown");
+        assert!(v.handle_key(key('i')).is_none(), "nothing shown");
         // Rows 0-1 and 7 changed; 12 is removed-only (no new side).
         let mut d = doc(20);
         d.rows[7].kind = RowKind::Changed;
@@ -644,8 +644,8 @@ mod tests {
         v.update(&Action::DiffLoaded(d.into()));
         let edit_line = |v: &mut DiffView, scroll| {
             v.scroll_y = scroll;
-            match v.handle_key(key('o')) {
-                Some(Action::OpenInEditor { path, line }) if path == "f.rs" => line,
+            match v.handle_key(key('i')) {
+                Some(Action::EditFile { path, line }) if path == "f.rs" => line,
                 other => panic!("{other:?}"),
             }
         };
@@ -662,8 +662,8 @@ mod tests {
         });
         v.update(&Action::DiffLoaded(doc(20).into()));
         assert!(matches!(
-            v.handle_key(key('o')),
-            Some(Action::OpenInEditor { path, line: None }) if path == "f.rs"
+            v.handle_key(key('i')),
+            Some(Action::EditFile { path, line: None }) if path == "f.rs"
         ));
     }
 }

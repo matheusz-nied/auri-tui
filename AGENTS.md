@@ -2,7 +2,8 @@
 
 A terminal IDE written in Rust with [ratatui]. Currently ships a VS Code–style
 git panel (a changes list, a side-by-side diff viewer, a commit message input
-and history) and a file explorer with a read-only file viewer.
+and history) and a file explorer with a file viewer that doubles as a simple
+editor (explicit save, never automatic).
 
 ## Architecture
 
@@ -34,14 +35,15 @@ ai/            AI commit-message generation: pure prompt/cleanup helpers +
                opencode) on background threads — the app's one async side
                effect, polled by App once per loop
 fs/            workspace reads: model types + FsBackend trait; `local` is
-               the real impl (paths validated, root-relative), `tree` the
-               pure expand/collapse model the explorer flattens
+               the real impl (paths validated, root-relative; atomic
+               `write_file`), `tree` the pure expand/collapse model the
+               explorer flattens
+buffer.rs      the editor's text model: lines, cursor/selection, undo/redo,
+               `modified()` (version != saved) — pure, unit-tested
+clipboard.rs   `Clipboard` trait; `Osc52` copies via the terminal
 components/    commit_input.rs, changes.rs, history.rs, diff_view.rs,
                file_tree.rs, file_view.rs, hitbox.rs, confirm_dialog.rs
                (modal overlay example)
-editor.rs      `o` = edit in `$VISUAL`/`$EDITOR` (else `vi`): pure
-               `command` (editor + per-editor line-jump args) +
-               `EditorLauncher` trait; `ShellEditor` runs it via `sh -c`
 highlight.rs   syntax highlighting (syntect + two-face = bat's grammars,
                embedded; the token colors are the astro theme built in code):
                pure, incremental `Highlighter`
@@ -65,10 +67,12 @@ Data flow: a component returns an `Action` from `handle_key`/`handle_mouse`/
 `update` → `App` enqueues it → side-effecting actions (`Refresh`,
 `ToggleStage`, `Commit`, `SelectFile`, `Discard`, `UnstageAll`,
 `LoadHistory`, `LoadCommitFiles`, `SelectCommitFile`, `LoadDirs`,
-`OpenFile`, `OpenInEditor`, `LoadLastCommitMessage`) are executed by `App`
+`OpenFile`, `WriteFile`, `CopyToClipboard`,
+`LoadLastCommitMessage`) are executed by `App`
 — git ones as `GitJob`s, fs ones directly via `Box<dyn FsBackend>` →
 results (`StatusLoaded`, `DiffLoaded`, `HistoryLoaded`,
-`CommitFilesLoaded`, `DirLoaded`, `FileLoaded`, `FileReloaded`, `Error`)
+`CommitFilesLoaded`, `DirLoaded`, `FileLoaded`, `FileReloaded`,
+`FileSaved`, `Error`)
 are broadcast to every component's `update`.
 
 Git runs on a worker thread (`main.rs`: `with_git_worker`, a second
@@ -136,16 +140,6 @@ a paste arrives as one `AppEvent::Paste`, which `App` sends to the focused
 panel's `Component::handle_paste` (never to an overlay). `CommitInput`
 inserts it with its newlines, so a pasted line break can't act as Enter.
 
-`OpenInEditor { path, line }` (`o` in Changes, the tree, the file viewer
-and the diff) always hands the terminal over: `App` checks the file still
-exists (`fs.stamp`), runs `Box<dyn EditorLauncher>` (fake it via
-`with_editor`; the default refuses) on the absolute path, reclaims, then
-`Refresh`es so the edit shows up. Lines: the viewer's top line; the diff's
-first changed new-side line in view (else its top line); commit diffs and
-lists open without one. `+N` is passed only to editors whose syntax is
-known (vi family, nano, emacs…; `path:N` for hx/subl/zed; `--goto` for
-VS Code forks).
-
 Status-bar messages (`App::notify`) clear on the next key press or after
 `MESSAGE_TTL` (errors: `ERROR_TTL`).
 
@@ -179,12 +173,57 @@ icon keeps its type color); `[explorer] icons = "text" | "nerd"` picks the
 glyph set (`text` default — `nerd` shows boxes without a Nerd Font). Tests
 fake the filesystem with `FakeFs` in `app.rs`.
 
+### Editing and saving — `buffer.rs`, `components/file_view.rs`
+
+`FileView` is modal: view mode (`j`/`k`…) and edit mode (`i`/Enter in,
+Esc out), where keys are text. It always renders from a `Buffer`; edits
+stay in it until the user saves — **nothing is ever written
+automatically**. Editing needs `FileDoc::source` (the exact contents; `None`
+for binary, truncated or non-UTF-8 files, which stay read-only so a save
+can't corrupt them). `Buffer::text()` round-trips the file byte for byte
+(LF/CRLF, missing final newline, tabs, stray `\r`).
+
+`App` learns the editor's state through `Component::edit_state()`
+(`inserting`, `modified`, `selection`) — it feeds `keymap::Ctx` (`editing`:
+only Ctrl globals are live, Tab/Esc/letters go to the editor; `modified`:
+`Ctrl-S` → `Command::Save` is bound; `selection`: Ctrl-C copies instead of
+quitting) and the guards below.
+
+`i` in Changes and the diff emits `EditFile { path, line }`: `App`
+(`edit_file`) opens the file unless it is already open (its edits kept),
+switches to the Explorer view, focuses `FileView` and broadcasts
+`StartEditing { path, line }` — the viewer enters edit mode with the
+cursor on `line` (the diff's first changed new-side line in view, else its
+top line; none from Changes or a commit diff).
+
+Save flow: `Ctrl-S` → `SaveFile { then }` (broadcast) → `FileView` answers
+`WriteFile { path, contents, version, force, then }` → `App::write_file`
+calls `FsBackend::write_file(path, contents, expected)` with the stamp
+from open/last save. `Written(stamp)`: the stamp is updated (so the
+refresh doesn't reload what we wrote), `SELF_WRITE_GRACE` is set, then
+`FileSaved { path, version }` (the buffer marks that version saved),
+`Refresh`, and `then`. `Conflict` (changed or deleted on disk) asks
+Overwrite (`WriteFile { force: true }`) / Reload (`DiscardEdits` +
+`Refresh`) / Cancel.
+
+Unsaved edits are never lost silently: `App::dispatch` checks every action
+with `unsaved_prompt` *before* broadcasting it — `Quit`, `OpenFile` and
+`EditFile` of another file become a Save / Discard / Cancel
+`Confirm` (the `alt` button) whose buttons run `SaveFile { then }` or
+`DiscardEdits { then }` with the original action as `then`. Ctrl-C in that
+prompt (for a quit) quits anyway (`quit_prompted`). A refresh that finds
+the file changed on disk while modified does not reload it — one warning
+per on-disk stamp (`OpenFile::warned`); saving then hits the conflict
+prompt. Overlays render in reverse so the input owner is on top.
+
 Syntax highlighting (`highlight.rs`) is pure, so components own it:
 `FileView` keeps one `Highlighter` per doc, `DiffView` one per side (with
 full-context diffs each side's cells in order *are* the old/new file).
 The grammar is picked by file name, extension, then first line. It is
 stateful, so `advance()` highlights from the top only as far as the view
-has scrolled and caches it; a reload restarts it. Past `MAX_LINES` or
+has scrolled and caches it; a reload restarts it. The parser state is
+checkpointed every `CHECKPOINT` lines so an edit (`invalidate_from`)
+re-highlights from the checkpoint before it, not from the top. Past `MAX_LINES` or
 after a line over `MAX_LINE_BYTES` (minified code) lines render plain.
 Only fg + bold/italic are applied, so diff backgrounds show through.
 `[profile.dev.package."*"] opt-level = 3` keeps it fast in debug builds.

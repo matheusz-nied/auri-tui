@@ -16,7 +16,7 @@ use anyhow::{bail, Result};
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// How many leading bytes are checked for NUL to detect binary files.
 const BINARY_SNIFF: usize = 8000;
-const TAB_WIDTH: usize = 4;
+pub const TAB_WIDTH: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -43,6 +43,9 @@ pub struct FileDoc {
     pub binary: bool,
     /// Only the first `MAX_FILE_BYTES` were read.
     pub truncated: bool,
+    /// The exact contents, for editing — `None` when they can't be edited
+    /// safely (binary, truncated or not UTF-8: saving would corrupt them).
+    pub source: Option<String>,
 }
 
 /// Cheap change detector for an open file: compared on every refresh so
@@ -51,6 +54,16 @@ pub struct FileDoc {
 pub struct FileStamp {
     pub modified: Option<SystemTime>,
     pub len: u64,
+}
+
+/// What `FsBackend::write_file` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteOutcome {
+    /// Written; the file's new stamp.
+    Written(FileStamp),
+    /// Not written: the file changed on disk (or was deleted, `stamp:
+    /// None`) since the stamp the caller expected.
+    Conflict { stamp: Option<FileStamp> },
 }
 
 /// The only interface the rest of the app uses to read the workspace. Lives
@@ -63,6 +76,17 @@ pub trait FsBackend {
     fn read_file(&self, path: &str) -> Result<FileDoc>;
     /// `None` if the file is gone.
     fn stamp(&self, path: &str) -> Result<Option<FileStamp>>;
+    /// Replace a file's contents atomically (permissions kept, symlinks
+    /// written through). With `expected`, only if the file's stamp still
+    /// equals it — otherwise nothing is written and `Conflict` comes back;
+    /// `None` writes unconditionally (overwrite, or recreate a deleted
+    /// file).
+    fn write_file(
+        &self,
+        path: &str,
+        contents: &str,
+        expected: Option<FileStamp>,
+    ) -> Result<WriteOutcome>;
 }
 
 /// Reject anything that could escape the root: absolute paths, `..`, `.`
@@ -114,6 +138,9 @@ pub fn sort_entries(entries: &mut [DirEntry]) {
 /// characters replaced by `�` so they stay visible and one column wide.
 pub fn decode_file(path: &str, bytes: &[u8], truncated: bool) -> FileDoc {
     let binary = bytes[..bytes.len().min(BINARY_SNIFF)].contains(&0);
+    let source = (!binary && !truncated)
+        .then(|| std::str::from_utf8(bytes).ok().map(str::to_string))
+        .flatten();
     let lines = if binary {
         Vec::new()
     } else {
@@ -134,6 +161,7 @@ pub fn decode_file(path: &str, bytes: &[u8], truncated: bool) -> FileDoc {
         lines,
         binary,
         truncated,
+        source,
     }
 }
 
@@ -212,5 +240,14 @@ mod tests {
         let doc = decode_file("f", b"PNG\0\x01\x02", false);
         assert!(doc.binary);
         assert!(doc.lines.is_empty());
+        assert_eq!(doc.source, None);
+    }
+
+    #[test]
+    fn source_is_exact_and_only_for_editable_text() {
+        let doc = decode_file("f", b"a\tb\r\n", false);
+        assert_eq!(doc.source.as_deref(), Some("a\tb\r\n"));
+        assert_eq!(decode_file("f", b"abc", true).source, None);
+        assert_eq!(decode_file("f", b"caf\xe9", false).source, None);
     }
 }

@@ -13,20 +13,20 @@ use ratatui::{DefaultTerminal, Frame, Terminal};
 
 use crate::action::{Action, PanelId};
 use crate::ai::{self, AiOutcome, AiProvider, AiRunner, ProcessRunner};
-use crate::component::Component;
+use crate::clipboard::{Clipboard, NoClipboard};
+use crate::component::{Component, EditState};
 use crate::components::changes::Changes;
 use crate::components::commit_input::CommitInput;
 use crate::components::confirm_dialog::ConfirmDialog;
 use crate::components::diff_view::DiffView;
 use crate::components::file_tree::FileTree;
-use crate::components::file_view::FileView;
+use crate::components::file_view::{self, FileView};
 use crate::components::help::Help;
 use crate::components::history::History;
 use crate::components::hitbox::Hitboxes;
 use crate::components::view_tabs;
-use crate::editor::EditorLauncher;
 use crate::event::{AppEvent, Events, POLL_TICK, WATCH_TICK};
-use crate::fs::{FileStamp, FsBackend};
+use crate::fs::{FileStamp, FsBackend, WriteOutcome};
 use crate::git::{DiffDoc, DiffSource, GitBackend};
 use crate::git_worker::{self, Done, GitJob, GitJobs, GitResult};
 use crate::keymap::{self, Command, HelpSection};
@@ -35,12 +35,26 @@ use crate::prefs::{Preferences, PrefsStore};
 use crate::theme;
 use crate::watch::{RepoWatcher, WatchEvent};
 
-/// The file shown by `FileView`; `stamp` is its state when last read,
-/// compared on refresh to decide whether to re-read it.
+/// The file shown by `FileView`; `stamp` is its state when last read (or
+/// saved), compared on refresh to decide whether to re-read it and on save
+/// to detect someone else's write.
 #[derive(Debug, Clone, PartialEq)]
 struct OpenFile {
     path: String,
     stamp: Option<FileStamp>,
+    /// The on-disk stamp already reported as "changed on disk" while the
+    /// editor had unsaved changes — warned about once, not every refresh.
+    warned: Option<FileStamp>,
+}
+
+impl OpenFile {
+    fn new(path: String, stamp: Option<FileStamp>) -> Self {
+        Self {
+            path,
+            stamp,
+            warned: None,
+        }
+    }
 }
 
 /// Gives the real terminal to a child process that may prompt on it (GPG
@@ -62,15 +76,6 @@ impl TerminalHandoff for NoHandoff {
     fn reclaim(&mut self) {}
 }
 
-/// No editor to run (tests): opening one is an error.
-struct NoEditor;
-
-impl EditorLauncher for NoEditor {
-    fn open(&mut self, _path: &str, _line: Option<usize>) -> Result<()> {
-        anyhow::bail!("no editor available")
-    }
-}
-
 /// Owns the components, the focus state, the last-frame layout rects and the
 /// action queue. It is the *only* place where git and `FsBackend` are
 /// used: side effects requested by components (`Refresh`, `ToggleStage`,
@@ -89,11 +94,13 @@ pub struct App {
     fs: Box<dyn FsBackend>,
     /// Background AI commit-message generation; polled once per loop.
     ai: Box<dyn AiRunner>,
-    /// Hands the terminal to `git commit` when it may prompt, and to the
-    /// editor.
+    /// Hands the terminal to `git commit` when it may prompt.
     terminal: Box<dyn TerminalHandoff>,
-    /// Runs `$VISUAL`/`$EDITOR` for `OpenInEditor`.
-    editor: Box<dyn EditorLauncher>,
+    /// Where the editor's Ctrl-C/Ctrl-X copies go (OSC 52).
+    clipboard: Box<dyn Clipboard>,
+    /// The unsaved-changes prompt is open for a quit: Ctrl-C again quits
+    /// without saving.
+    quit_prompted: bool,
     /// The screen was used by someone else: clear before the next draw.
     needs_clear: bool,
     events: Events,
@@ -224,7 +231,8 @@ impl App {
             fs,
             ai: Box::new(ProcessRunner::default()),
             terminal: Box::new(NoHandoff),
-            editor: Box::new(NoEditor),
+            clipboard: Box::new(NoClipboard),
+            quit_prompted: false,
             needs_clear: false,
             events: Events::default(),
             components: vec![
@@ -295,10 +303,9 @@ impl App {
         self
     }
 
-    /// Set how files are opened for editing (the default refuses — there
-    /// is no terminal to give an editor in tests).
-    pub fn with_editor(mut self, e: Box<dyn EditorLauncher>) -> Self {
-        self.editor = e;
+    /// Set where copied text goes (the default drops it).
+    pub fn with_clipboard(mut self, c: Box<dyn Clipboard>) -> Self {
+        self.clipboard = c;
         self
     }
 
@@ -422,6 +429,11 @@ impl App {
             }
             self.dirty = true;
             while let Some(action) = self.queue.pop_front() {
+                // Would this throw unsaved edits away? Ask first.
+                if let Some(prompt) = self.unsaved_prompt(&action) {
+                    self.enqueue(prompt);
+                    continue;
+                }
                 for (_, comp) in &mut self.components {
                     if let Some(next) = comp.update(&action) {
                         self.queue.push_back(next);
@@ -508,6 +520,45 @@ impl App {
         }
     }
 
+    /// The editor's state (`None`: no file open).
+    fn file_edit(&self) -> Option<EditState> {
+        self.components
+            .iter()
+            .find(|(id, _)| *id == PanelId::FileView)
+            .and_then(|(_, c)| c.edit_state())
+    }
+
+    fn file_modified(&self) -> bool {
+        self.file_edit().is_some_and(|e| e.modified)
+    }
+
+    /// With unsaved edits, an action that would lose them — quitting,
+    /// opening another file over them — becomes a Save / Discard / Cancel prompt that runs it afterwards.
+    fn unsaved_prompt(&mut self, action: &Action) -> Option<Action> {
+        if !self.file_modified() {
+            return None;
+        }
+        let path = self.file.as_ref()?.path.clone();
+        let verb = match action {
+            Action::Quit => "quitting".to_string(),
+            Action::OpenFile(p) if *p == path => "reloading it".to_string(),
+            Action::OpenFile(p) => format!("opening {p}"),
+            Action::EditFile { path: p, .. } if *p != path => format!("opening {p}"),
+            _ => return None,
+        };
+        self.quit_prompted = matches!(action, Action::Quit);
+        let then = || Some(Box::new(action.clone()));
+        Some(Action::Confirm {
+            prompt: format!("{path} has unsaved changes. Save them before {verb}?"),
+            confirm_label: "Save".to_string(),
+            then: Box::new(Action::SaveFile { then: then() }),
+            alt: Some((
+                "Discard".to_string(),
+                Box::new(Action::DiscardEdits { then: then() }),
+            )),
+        })
+    }
+
     /// App-side handling: focus changes and git side effects.
     fn execute(&mut self, action: Action) {
         match action {
@@ -546,18 +597,26 @@ impl App {
                 }
             }
             Action::OpenFile(path) => {
-                // Stamp first: a write racing the read just causes one extra
-                // reload on the next refresh.
-                let stamp = self.fs.stamp(&path).ok().flatten();
-                match self.fs.read_file(&path) {
-                    Ok(doc) => {
-                        self.file = Some(OpenFile { path, stamp });
-                        self.enqueue(Action::FileLoaded(doc));
-                    }
-                    Err(e) => self.enqueue(Action::Error(format!("open: {e}"))),
+                self.open_file(path);
+            }
+            Action::EditFile { path, line } => self.edit_file(path, line),
+            Action::WriteFile {
+                path,
+                contents,
+                version,
+                force,
+                then,
+            } => self.write_file(path, contents, version, force, then),
+            Action::DiscardEdits { then } => {
+                if let Some(then) = then {
+                    self.enqueue(*then);
                 }
             }
-            Action::OpenInEditor { path, line } => self.open_in_editor(&path, line),
+            Action::CopyToClipboard(text) => {
+                if let Err(e) = self.clipboard.copy(&text) {
+                    self.enqueue(Action::Error(format!("copy: {e}")));
+                }
+            }
             Action::LoadHistory { skip } => self.git.submit(GitJob::History { skip }),
             Action::LoadCommitFiles(hash) => self.git.submit(GitJob::CommitFiles(hash)),
             Action::ToggleStage(file) => self.git.submit(GitJob::ToggleStage(file)),
@@ -594,6 +653,9 @@ impl App {
             | Action::DirLoaded { .. }
             | Action::FileLoaded(_)
             | Action::FileReloaded(_)
+            | Action::SaveFile { .. }
+            | Action::FileSaved { .. }
+            | Action::StartEditing { .. }
             | Action::ExplorerCollapseAll
             | Action::ShowHelp(_)
             | Action::PreferencesChanged(_) => {}
@@ -768,32 +830,6 @@ impl App {
         );
     }
 
-    /// Run the editor on `path` with the terminal handed over, then refresh
-    /// so the edit shows up in the status, diff and file viewer.
-    fn open_in_editor(&mut self, path: &str, line: Option<usize>) {
-        match self.fs.stamp(path) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                self.enqueue(Action::Error(format!("edit: {path} no longer exists")));
-                return;
-            }
-            Err(e) => {
-                self.enqueue(Action::Error(format!("edit: {e}")));
-                return;
-            }
-        }
-        let abs = self.git.backend().root().join(path);
-        self.terminal.release();
-        let result = self.editor.open(&abs.to_string_lossy(), line);
-        self.terminal.reclaim();
-        self.needs_clear = true;
-        if let Err(e) = result {
-            self.enqueue(Action::Error(format!("edit: {e}")));
-        }
-        // Even a failed editor may have saved.
-        self.enqueue(Action::Refresh);
-    }
-
     /// Point the diff pane at `source` and load it. Until it arrives the
     /// pane shows "Loading…"; a result for an older source is dropped.
     fn load_diff(&mut self, source: DiffSource) {
@@ -849,20 +885,130 @@ impl App {
         });
     }
 
+    /// Read `path` into the file viewer (`FileLoaded`); `false` (with an
+    /// error shown) if it can't be read — the previous file stays.
+    fn open_file(&mut self, path: String) -> bool {
+        // Stamp first: a write racing the read just causes one extra
+        // reload on the next refresh.
+        let stamp = self.fs.stamp(&path).ok().flatten();
+        match self.fs.read_file(&path) {
+            Ok(doc) => {
+                self.file = Some(OpenFile::new(path, stamp));
+                self.enqueue(Action::FileLoaded(doc));
+                true
+            }
+            Err(e) => {
+                self.enqueue(Action::Error(format!("open: {e}")));
+                false
+            }
+        }
+    }
+
+    /// `EditFile` (`i` in Changes or the diff): the Explorer view with the
+    /// editor focused, on `path` — opened unless it already is (its unsaved
+    /// edits, if any, are kept) — in edit mode at `line`.
+    fn edit_file(&mut self, path: String, line: Option<usize>) {
+        let already_open = self.file.as_ref().is_some_and(|f| f.path == path);
+        if !already_open && !self.open_file(path.clone()) {
+            return;
+        }
+        self.set_view(SidebarView::Explorer);
+        self.focus = PanelId::FileView;
+        self.enqueue(Action::StartEditing { path, line });
+    }
+
+    /// `WriteFile`: save the editor's text — unless the file changed on
+    /// disk since it was opened (or last saved) and `force` is off, which
+    /// asks Overwrite / Reload / Cancel instead. A save is our own write:
+    /// the stamp is updated (no reload of what we just wrote) and the
+    /// watcher's echo is ignored like a git write's.
+    fn write_file(
+        &mut self,
+        path: String,
+        contents: String,
+        version: u64,
+        force: bool,
+        then: Option<Box<Action>>,
+    ) {
+        let Some(open) = self.file.as_ref().filter(|f| f.path == path) else {
+            self.enqueue(Action::Error(format!("save: {path} is not open")));
+            return;
+        };
+        let expected = if force { None } else { open.stamp };
+        match self.fs.write_file(&path, &contents, expected) {
+            Ok(WriteOutcome::Written(stamp)) => {
+                self.file = Some(OpenFile::new(path.clone(), Some(stamp)));
+                self.self_write_until = Some(Instant::now() + SELF_WRITE_GRACE);
+                self.notify(format!("Saved {path}"), false);
+                self.enqueue(Action::FileSaved { path, version });
+                // The new contents show up in Changes and the diff.
+                self.enqueue(Action::Refresh);
+                if let Some(then) = then {
+                    self.enqueue(*then);
+                }
+            }
+            Ok(WriteOutcome::Conflict { stamp }) => {
+                let retry = Box::new(Action::WriteFile {
+                    path: path.clone(),
+                    contents,
+                    version,
+                    force: true,
+                    then,
+                });
+                let (prompt, confirm_label, alt) = match stamp {
+                    None => (
+                        format!("{path} was deleted on disk. Save it again?"),
+                        "Save",
+                        None,
+                    ),
+                    Some(_) => (
+                        format!(
+                            "{path} changed on disk since it was opened. Overwrite it with \
+                             your version, or reload it (your changes are lost)?"
+                        ),
+                        "Overwrite",
+                        Some((
+                            "Reload".to_string(),
+                            Box::new(Action::DiscardEdits {
+                                then: Some(Box::new(Action::Refresh)),
+                            }),
+                        )),
+                    ),
+                };
+                self.enqueue(Action::Confirm {
+                    prompt,
+                    confirm_label: confirm_label.to_string(),
+                    then: retry,
+                    alt,
+                });
+            }
+            Err(e) => self.enqueue(Action::Error(format!("save: {e:#}"))),
+        }
+    }
+
     /// Re-read the open file when its stamp changed on disk. A deleted
-    /// file keeps showing its last contents.
+    /// file keeps showing its last contents; so does one with unsaved
+    /// edits — those are never replaced behind the user's back (saving
+    /// will ask), they only get a one-time warning.
     fn reload_open_file(&mut self) {
-        let Some(OpenFile { path, stamp }) = &self.file else {
+        let Some(OpenFile { path, stamp, .. }) = &self.file else {
             return;
         };
         let (path, old) = (path.clone(), *stamp);
         match self.fs.stamp(&path) {
+            Ok(Some(new)) if Some(new) != old && self.file_modified() => {
+                let file = self.file.as_mut().expect("checked above");
+                if file.warned != Some(new) {
+                    file.warned = Some(new);
+                    self.notify(
+                        format!("{path} changed on disk — your unsaved edits are kept"),
+                        true,
+                    );
+                }
+            }
             Ok(Some(new)) if Some(new) != old => match self.fs.read_file(&path) {
                 Ok(doc) => {
-                    self.file = Some(OpenFile {
-                        path,
-                        stamp: Some(new),
-                    });
+                    self.file = Some(OpenFile::new(path, Some(new)));
                     self.enqueue(Action::FileReloaded(doc));
                 }
                 Err(e) => self.enqueue(Action::Error(format!("open: {e}"))),
@@ -951,12 +1097,22 @@ impl App {
         self.ensure_focus_visible();
     }
 
-    /// Where `keymap::lookup` stands: overlay open, typing, AI running.
+    /// Where `keymap::lookup` stands: overlay open, typing (commit box or
+    /// editor), AI running, unsaved edits.
     fn key_ctx(&self) -> keymap::Ctx {
+        let overlay = self.overlays.iter().any(|o| o.captures_input());
+        let edit = self.file_edit().unwrap_or_default();
+        let editing = !overlay
+            && edit.inserting
+            && self.focus == PanelId::FileView
+            && self.panel_visible(PanelId::FileView);
         keymap::Ctx {
-            overlay: self.overlays.iter().any(|o| o.captures_input()),
+            overlay,
             typing: self.focus == PanelId::CommitInput,
             ai_running: self.ai.is_running(),
+            editing,
+            modified: edit.modified,
+            selection: editing && edit.selection,
         }
     }
 
@@ -965,7 +1121,11 @@ impl App {
     fn on_key(&mut self, key: KeyEvent) {
         // Any key press dismisses the last info/error message.
         self.message = None;
-        if let Some(command) = keymap::lookup(&key, self.key_ctx()) {
+        let ctx = self.key_ctx();
+        if !ctx.overlay {
+            self.quit_prompted = false;
+        }
+        if let Some(command) = keymap::lookup(&key, ctx) {
             self.run_command(command);
             return;
         }
@@ -985,7 +1145,10 @@ impl App {
 
     fn run_command(&mut self, command: Command) {
         match command {
+            // Ctrl-C in the "unsaved changes" prompt for a quit: quit anyway.
+            Command::Quit if self.quit_prompted => self.running = false,
             Command::Quit => self.enqueue(Action::Quit),
+            Command::Save => self.enqueue(Action::SaveFile { then: None }),
             Command::FocusNext => self.enqueue(Action::FocusNext),
             Command::FocusPrev => self.enqueue(Action::FocusPrev),
             Command::Refresh => self.enqueue(Action::Refresh),
@@ -1031,6 +1194,10 @@ impl App {
                 rows,
             })
         }));
+        sections.push(HelpSection {
+            title: "Editor (i in the file viewer)".to_string(),
+            rows: keymap::hint_rows(file_view::EDIT_HINTS),
+        });
         sections
     }
 
@@ -1163,8 +1330,9 @@ impl App {
                 }
             }
         }
-        // Overlays draw on top of the panels with the whole frame available.
-        for overlay in &mut self.overlays {
+        // Overlays draw on top of the panels with the whole frame available
+        // — the first one last, so the one that gets input is on top.
+        for overlay in self.overlays.iter_mut().rev() {
             overlay.render(f, area, overlay.captures_input());
         }
         self.render_status_bar(f);
@@ -1400,6 +1568,21 @@ mod tests {
                 modified: None,
                 len: *v,
             }))
+        }
+        fn write_file(
+            &self,
+            path: &str,
+            contents: &str,
+            expected: Option<FileStamp>,
+        ) -> Result<WriteOutcome> {
+            if let Some(want) = expected {
+                let now = self.stamp(path)?;
+                if now != Some(want) {
+                    return Ok(WriteOutcome::Conflict { stamp: now });
+                }
+            }
+            self.write(path, contents);
+            Ok(WriteOutcome::Written(self.stamp(path)?.unwrap()))
         }
     }
 
@@ -1875,79 +2058,6 @@ mod tests {
         assert!(matches!(&app.message, Some((m, false)) if m == "Committed"));
     }
 
-    /// (path, line) of each editor run.
-    type Opened = Rc<RefCell<Vec<(String, Option<usize>)>>>;
-
-    /// Records each open in the handoff log and "saves" the file.
-    struct FakeEditor {
-        log: CallLog,
-        fs: FakeFs,
-        opened: Opened,
-    }
-
-    impl EditorLauncher for FakeEditor {
-        fn open(&mut self, path: &str, line: Option<usize>) -> Result<()> {
-            self.log.borrow_mut().push("edit");
-            self.opened.borrow_mut().push((path.to_string(), line));
-            self.fs.write("src/main.rs", "fn main() { edited() }");
-            Ok(())
-        }
-    }
-
-    fn editor_app() -> (App, CallLog, Opened) {
-        let (app, fs) = explorer_app(MemoryStore::new(None));
-        let log = CallLog::default();
-        let opened = Rc::default();
-        let app = app
-            .with_terminal_handoff(Box::new(FakeHandoff(log.clone())))
-            .with_editor(Box::new(FakeEditor {
-                log: log.clone(),
-                fs,
-                opened: Rc::clone(&opened),
-            }));
-        (app, log, opened)
-    }
-
-    #[test]
-    fn editor_runs_with_the_terminal_handed_over_then_refreshes() {
-        let (mut app, log, opened) = editor_app();
-        app.on_key(KeyEvent::from(KeyCode::Char('e')));
-        app.enqueue(Action::OpenFile("src/main.rs".to_string()));
-        app.dispatch();
-        // `o` in the file viewer edits at the top visible line.
-        app.on_key(KeyEvent::from(KeyCode::Char('2')));
-        app.dispatch();
-        app.on_key(KeyEvent::from(KeyCode::Char('o')));
-        app.dispatch();
-        assert_eq!(*log.borrow(), ["release", "edit", "reclaim"]);
-        assert_eq!(
-            *opened.borrow(),
-            [("/repo/src/main.rs".to_string(), Some(1))]
-        );
-        assert!(
-            app.needs_clear,
-            "the next frame must be redrawn from scratch"
-        );
-        // The refresh after the editor exits picks up the saved file.
-        assert!(screen(&mut app).contains("edited()"));
-    }
-
-    #[test]
-    fn editing_a_missing_file_errors_without_running_the_editor() {
-        let (mut app, log, _) = editor_app();
-        app.enqueue(Action::OpenInEditor {
-            path: "gone.rs".to_string(),
-            line: None,
-        });
-        app.dispatch();
-        assert!(log.borrow().is_empty());
-        assert!(
-            matches!(&app.message, Some((m, true)) if m.contains("no longer exists")),
-            "{:?}",
-            app.message
-        );
-    }
-
     /// A `TestBackend` that fails the test on a cursor-position query —
     /// what a terminal that never answers it amounts to.
     struct NoCursorQuery(ratatui::backend::TestBackend);
@@ -2404,5 +2514,254 @@ mod tests {
         let (app, _fs) = explorer_app(store);
         assert_eq!(app.sidebar.view, SidebarView::Explorer);
         assert_eq!(app.focus, PanelId::Explorer);
+    }
+
+    /// README.md open in the editor, edit mode on, main pane focused.
+    fn editing_readme() -> (App, FakeFs) {
+        let (mut app, fs) = explorer_app(MemoryStore::new(None));
+        app.on_key(KeyEvent::from(KeyCode::Char('e')));
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.dispatch();
+        app.on_key(KeyEvent::from(KeyCode::Char('2')));
+        app.dispatch();
+        app.on_key(KeyEvent::from(KeyCode::Char('i')));
+        app.dispatch();
+        assert!(app.key_ctx().editing);
+        (app, fs)
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.dispatch();
+    }
+
+    fn press(app: &mut App, key: KeyEvent) {
+        app.on_key(key);
+        app.dispatch();
+    }
+
+    fn ctrl_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn disk(fs: &FakeFs, path: &str) -> String {
+        fs.files.borrow()[path].0.clone()
+    }
+
+    #[test]
+    fn edits_reach_the_disk_only_on_ctrl_s() {
+        let (mut app, fs) = editing_readme();
+        // Letters are text while editing — `q` doesn't quit.
+        type_text(&mut app, "q!");
+        assert!(app.running);
+        assert!(app.file_modified());
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert_eq!(disk(&fs, "README.md"), "hello readme");
+        assert!(screen(&mut app).contains("1 q!hello readme"));
+
+        press(&mut app, ctrl_key('s'));
+        assert_eq!(disk(&fs, "README.md"), "q!hello readme");
+        assert!(!app.file_modified());
+        assert!(matches!(&app.message, Some((m, false)) if m == "Saved README.md"));
+        // Our own write is not "changed on disk": no reload, no warning.
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert!(matches!(&app.message, Some((m, false)) if m.starts_with("Saved")));
+        // With nothing to save Ctrl-S is not bound.
+        assert!(!app.key_ctx().modified);
+    }
+
+    #[test]
+    fn quitting_with_unsaved_edits_asks_first() {
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        press(&mut app, KeyEvent::from(KeyCode::Esc));
+        press(&mut app, KeyEvent::from(KeyCode::Char('q')));
+        assert!(app.running);
+        assert!(app.key_ctx().overlay);
+        assert!(screen(&mut app).contains("unsaved changes"));
+        // Cancel: nothing happens.
+        press(&mut app, KeyEvent::from(KeyCode::Char('n')));
+        assert!(app.running && app.file_modified());
+        // Save: written, then quit.
+        press(&mut app, KeyEvent::from(KeyCode::Char('q')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert!(!app.running);
+        assert_eq!(disk(&fs, "README.md"), "xhello readme");
+
+        // Discard: quit, the file untouched.
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        press(&mut app, KeyEvent::from(KeyCode::Esc));
+        press(&mut app, KeyEvent::from(KeyCode::Char('q')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('d')));
+        assert!(!app.running);
+        assert_eq!(disk(&fs, "README.md"), "hello readme");
+    }
+
+    #[test]
+    fn ctrl_c_twice_quits_without_saving() {
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        press(&mut app, ctrl_key('c'));
+        assert!(app.running && app.key_ctx().overlay);
+        press(&mut app, ctrl_key('c'));
+        assert!(!app.running);
+        assert_eq!(disk(&fs, "README.md"), "hello readme");
+    }
+
+    #[test]
+    fn opening_another_file_saves_or_discards_first() {
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        app.enqueue(Action::OpenFile("src/main.rs".to_string()));
+        app.dispatch();
+        // Still on README until answered.
+        assert_eq!(app.file.as_ref().unwrap().path, "README.md");
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert_eq!(app.file.as_ref().unwrap().path, "src/main.rs");
+        assert_eq!(disk(&fs, "README.md"), "xhello readme");
+        assert!(!app.file_modified());
+
+        // Discard drops the edits, then opens it.
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        app.enqueue(Action::OpenFile("src/main.rs".to_string()));
+        app.dispatch();
+        press(&mut app, KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(app.file.as_ref().unwrap().path, "src/main.rs");
+        assert_eq!(disk(&fs, "README.md"), "hello readme");
+        assert!(!app.file_modified());
+    }
+
+    #[test]
+    fn a_change_on_disk_never_replaces_unsaved_edits() {
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "mine ");
+        fs.write("README.md", "theirs");
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert!(screen(&mut app).contains("1 mine hello readme"));
+        assert!(matches!(&app.message, Some((m, true)) if m.contains("changed on disk")));
+        // Warned once, not on every refresh.
+        app.message = None;
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert!(app.message.is_none());
+
+        // Saving asks; Overwrite writes ours.
+        press(&mut app, ctrl_key('s'));
+        assert_eq!(disk(&fs, "README.md"), "theirs");
+        assert!(screen(&mut app).contains("changed on disk since"));
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert_eq!(disk(&fs, "README.md"), "mine hello readme");
+        assert!(!app.file_modified());
+
+        // Reload takes theirs and drops ours.
+        type_text(&mut app, "again ");
+        fs.write("README.md", "theirs 2");
+        press(&mut app, ctrl_key('s'));
+        press(&mut app, KeyEvent::from(KeyCode::Char('r')));
+        assert_eq!(disk(&fs, "README.md"), "theirs 2");
+        assert!(!app.file_modified());
+        assert!(screen(&mut app).contains("1 theirs 2"));
+    }
+
+    #[test]
+    fn saving_a_file_deleted_on_disk_asks_to_recreate_it() {
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        fs.files.borrow_mut().remove("README.md");
+        press(&mut app, ctrl_key('s'));
+        assert!(screen(&mut app).contains("was deleted on disk"));
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert_eq!(disk(&fs, "README.md"), "xhello readme");
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeClipboard(Rc<RefCell<Vec<String>>>);
+
+    impl Clipboard for FakeClipboard {
+        fn copy(&mut self, text: &str) -> Result<()> {
+            self.0.borrow_mut().push(text.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn ctrl_c_copies_a_selection_instead_of_quitting() {
+        let (app, _fs) = editing_readme();
+        let clip = FakeClipboard::default();
+        let mut app = app.with_clipboard(Box::new(clip.clone()));
+        press(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        press(&mut app, ctrl_key('c'));
+        assert!(app.running);
+        assert!(!app.key_ctx().overlay);
+        assert_eq!(*clip.0.borrow(), ["h"]);
+    }
+
+    #[test]
+    fn i_in_changes_edits_the_file_in_the_app() {
+        let git = FakeGit {
+            status: vec![FileChange {
+                path: "README.md".to_string(),
+                orig_path: None,
+                section: Section::Unstaged,
+                code: 'M',
+            }],
+            ..FakeGit::default()
+        };
+        let fs = FakeFs::sample();
+        let mut app = App::new(
+            Box::new(git),
+            Box::new(fs.clone()),
+            Box::new(MemoryStore::new(None)),
+        );
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        press(&mut app, KeyEvent::from(KeyCode::Char('1')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('i')));
+        assert_eq!(app.sidebar.view, SidebarView::Explorer);
+        assert_eq!(app.focus, PanelId::FileView);
+        assert!(app.key_ctx().editing);
+        type_text(&mut app, "x");
+        press(&mut app, ctrl_key('s'));
+        assert_eq!(disk(&fs, "README.md"), "xhello readme");
+    }
+
+    #[test]
+    fn edit_file_keeps_or_guards_unsaved_edits() {
+        let (mut app, fs) = editing_readme();
+        type_text(&mut app, "x");
+        press(&mut app, KeyEvent::from(KeyCode::Esc));
+        // The same file: no reload, the edit is still there, at line 1.
+        app.enqueue(Action::EditFile {
+            path: "README.md".to_string(),
+            line: Some(1),
+        });
+        app.dispatch();
+        assert!(app.file_modified() && app.key_ctx().editing);
+        // Another file: asks first.
+        app.enqueue(Action::EditFile {
+            path: "src/main.rs".to_string(),
+            line: None,
+        });
+        app.dispatch();
+        assert!(app.key_ctx().overlay);
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert_eq!(disk(&fs, "README.md"), "xhello readme");
+        assert_eq!(app.file.as_ref().unwrap().path, "src/main.rs");
+        assert!(app.key_ctx().editing);
+        // A file that can't be read: an error, nothing switches.
+        app.enqueue(Action::EditFile {
+            path: "gone.rs".to_string(),
+            line: None,
+        });
+        app.dispatch();
+        assert_eq!(app.file.as_ref().unwrap().path, "src/main.rs");
+        assert!(matches!(&app.message, Some((m, true)) if m.contains("gone.rs")));
     }
 }

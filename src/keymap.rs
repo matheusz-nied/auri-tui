@@ -27,6 +27,8 @@ pub enum Command {
     ToggleAiProvider,
     /// Stop a running AI generation — only bound while one runs.
     CancelAi,
+    /// Save the edited file — only bound while it has unsaved changes.
+    Save,
     Help,
 }
 
@@ -35,9 +37,10 @@ pub enum Command {
 pub enum Scope {
     /// Everywhere, even in a modal dialog.
     Anywhere,
-    /// Every panel, even while typing a commit message.
+    /// Every panel, even while typing a commit message. While editing a
+    /// file only the Ctrl ones (Tab and Esc belong to the editor there).
     Global,
-    /// Every panel but the commit box, where the key is text.
+    /// Every panel but the commit box and the editor, where the key is text.
     Navigation,
     /// Only while typing in the commit box.
     Typing,
@@ -52,6 +55,12 @@ pub struct Ctx {
     pub typing: bool,
     /// An AI generation is running.
     pub ai_running: bool,
+    /// The file viewer is focused in edit mode.
+    pub editing: bool,
+    /// The edited file has unsaved changes (focused or not).
+    pub modified: bool,
+    /// Editing with text selected: Ctrl-C copies.
+    pub selection: bool,
 }
 
 pub struct Binding {
@@ -114,8 +123,23 @@ use Scope::{Anywhere, Global, Navigation, Typing};
 /// match, so state-dependent ones (`CancelAi`) come before the fallback
 /// meaning of the same key.
 pub const GLOBAL: &[Binding] = &[
-    ctrl('c', C::Quit, Anywhere, "ctrl-c", "quit", None),
+    ctrl(
+        'c',
+        C::Quit,
+        Anywhere,
+        "ctrl-c",
+        "quit (copy, with text selected)",
+        None,
+    ),
     bind(Char('q'), C::Quit, Navigation, "q", "quit", Some("q quit")),
+    ctrl(
+        's',
+        C::Save,
+        Global,
+        "ctrl-s",
+        "save the edited file",
+        Some("ctrl-s save"),
+    ),
     bind(
         Char('?'),
         C::Help,
@@ -251,11 +275,18 @@ impl Binding {
     fn active(&self, ctx: Ctx) -> bool {
         let in_scope = match self.scope {
             Anywhere => true,
-            Global => !ctx.overlay,
-            Navigation => !ctx.overlay && !ctx.typing,
+            Global => !ctx.overlay && (self.ctrl || !ctx.editing),
+            Navigation => !ctx.overlay && !ctx.typing && !ctx.editing,
             Typing => !ctx.overlay && ctx.typing,
         };
-        in_scope && (self.command != C::CancelAi || ctx.ai_running)
+        in_scope
+            && match self.command {
+                C::CancelAi => ctx.ai_running,
+                C::Save => ctx.modified,
+                // Ctrl-C over a selection is the editor's copy.
+                C::Quit if self.ctrl => ctx.overlay || !(ctx.editing && ctx.selection),
+                _ => true,
+            }
     }
 }
 
@@ -377,6 +408,73 @@ mod tests {
         assert_eq!(lookup(&esc, busy), Some(C::CancelAi));
         // Elsewhere Esc is the panel's own key.
         assert_eq!(lookup(&esc, nav()), None);
+    }
+
+    #[test]
+    fn the_editor_gets_letters_tab_and_esc() {
+        let editing = Ctx {
+            editing: true,
+            ..Ctx::default()
+        };
+        for code in [
+            Char('q'),
+            Char('e'),
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Esc,
+        ] {
+            assert_eq!(
+                lookup(&key(code, KeyModifiers::NONE), editing),
+                None,
+                "{code:?}"
+            );
+        }
+        let busy = Ctx {
+            ai_running: true,
+            ..editing
+        };
+        assert_eq!(lookup(&key(KeyCode::Esc, KeyModifiers::NONE), busy), None);
+        let g = key(Char('g'), KeyModifiers::CONTROL);
+        assert_eq!(lookup(&g, editing), Some(C::GenerateCommitMessage));
+    }
+
+    #[test]
+    fn ctrl_s_only_with_unsaved_changes() {
+        let s = key(Char('s'), KeyModifiers::CONTROL);
+        assert_eq!(lookup(&s, nav()), None);
+        let modified = Ctx {
+            modified: true,
+            ..Ctx::default()
+        };
+        assert_eq!(lookup(&s, modified), Some(C::Save));
+        assert_eq!(
+            lookup(
+                &s,
+                Ctx {
+                    editing: true,
+                    ..modified
+                }
+            ),
+            Some(C::Save)
+        );
+        assert!(status_hints(modified).contains("ctrl-s save"));
+        assert!(!status_hints(nav()).contains("ctrl-s"));
+    }
+
+    #[test]
+    fn ctrl_c_copies_a_selection_while_editing() {
+        let c = key(Char('c'), KeyModifiers::CONTROL);
+        let selecting = Ctx {
+            editing: true,
+            selection: true,
+            ..Ctx::default()
+        };
+        assert_eq!(lookup(&c, selecting), None);
+        let editing = Ctx {
+            selection: false,
+            ..selecting
+        };
+        assert_eq!(lookup(&c, editing), Some(C::Quit));
     }
 
     #[test]

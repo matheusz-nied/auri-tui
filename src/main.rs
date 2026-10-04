@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use auri_tui::app::{App, TerminalHandoff};
-use auri_tui::editor::ShellEditor;
+use auri_tui::clipboard::Osc52;
 use auri_tui::fs::local::LocalFs;
 use auri_tui::git::cli::{git_dirs, resolve_toplevel, CliGit};
 use auri_tui::prefs::{FileStore, MemoryStore, PrefsStore};
@@ -30,8 +30,8 @@ Options:
   -V, --version  Print version
 
 Inside auri: e = files, c = source control, 2 = main pane,
-o = edit in $EDITOR, b = toggle sidebar, Tab = next panel, q = quit,
-? = all keys.";
+i = edit the open file (Esc stops, Ctrl-S saves), b = toggle sidebar,
+Tab = next panel, q = quit, ? = all keys.";
 
 fn main() -> Result<()> {
     let arg = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
@@ -72,7 +72,7 @@ fn main() -> Result<()> {
     )
     .with_git_worker(Box::new(CliGit::new(root)))
     .with_terminal_handoff(Box::new(Crossterm))
-    .with_editor(Box::new(ShellEditor))
+    .with_clipboard(Box::new(Osc52))
     .with_watcher(watcher);
     let result = app.run(&mut terminal);
 
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
 }
 
 /// Undoes/redoes what `ratatui::init` + `EnableMouseCapture` set up, so a
-/// prompting `git commit` (GPG pinentry, hooks) or the editor gets a normal
+/// prompting `git commit` (GPG pinentry, hooks) gets a normal
 /// terminal.
 struct Crossterm;
 

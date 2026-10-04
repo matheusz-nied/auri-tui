@@ -44,6 +44,8 @@ pub const DEL_BG: Color = rgb(0x1e1715);
 pub const HOVER_BG: Color = rgb(0x141311);
 pub const SEL_BG: Color = rgb(0x191716);
 pub const SEL_FOCUS_BG: Color = rgb(0x282724);
+/// Selected text in the editor: gold at 20% over `BG`.
+pub const TEXT_SEL_BG: Color = rgb(0x342816);
 
 // Syntax (the mockup's tokens).
 pub const SYN_KEYWORD: Color = rgb(0xc9a862);

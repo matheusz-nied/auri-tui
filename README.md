@@ -22,8 +22,9 @@ auri is a small terminal UI for looking at your repository: a file explorer
 with syntax-highlighted previews, and a VS Code–style source control view
 with side-by-side diffs. Mouse and keyboard both work.
 
-- **Explorer** — lazy file tree with git status decorations and a read-only,
-  syntax-highlighted file viewer.
+- **Explorer** — lazy file tree with git status decorations and a
+  syntax-highlighted file viewer you can edit in (`i`); nothing is written
+  until you save with `Ctrl-S`.
 - **Source Control** — staged / unstaged changes, side-by-side diffs
   (`n`/`N` jump between changes), stage, unstage and discard.
 - **History** — browse past commits and the diff of every file they touched.
@@ -36,7 +37,7 @@ with side-by-side diffs. Mouse and keyboard both work.
 # Shell installer (macOS / Linux)
 curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh
 
-# From source (Rust toolchain)
+# From source (Rust toolchain)ola
 cargo install auri-tui
 ```
 
@@ -70,16 +71,25 @@ diff. Drag the dividers to resize.
 | `[` / `]` | Shrink / grow sidebar |
 | `r` | Refresh |
 | `?` | All keys (help) |
-| `q` / `Ctrl-C` | Quit |
+| `Ctrl-S` | Save the edited file (only while it has unsaved changes) |
+| `q` / `Ctrl-C` | Quit (asks first if there are unsaved changes) |
 
 **Lists** — `j`/`k` or arrows to move, `g`/`G` top/bottom, `Enter` to open.
 In the tree, `l`/`h` expand/collapse.
 
-**Changes** — `Space`/`s` stage or unstage, `a` stage all, `d` discard.
+**Changes** — `Space`/`s` stage or unstage, `a` stage all, `d` discard,
+`i` edit the file.
 
-**Edit** — `o` opens the selected file (changes, tree, file viewer or diff)
-in `$VISUAL`/`$EDITOR` (default `vi`), at the line in view when the editor
-supports it; auri resumes when the editor exits.
+**Edit in auri** — in the file viewer, `i` (or `Enter`) starts editing and
+`Esc` stops. `i` in Changes or in a diff opens that file in the editor
+(at the first change in view, from a diff); the title shows `●` while there are unsaved changes. Nothing is
+saved automatically: `Ctrl-S` saves. Quitting or opening another file
+with unsaved changes asks Save / Discard / Cancel (`Ctrl-C` twice quits
+without saving). If the file changed on disk meanwhile, your edits are
+kept and saving asks whether to overwrite it or reload it. Shift+arrows
+or a mouse drag select; `Ctrl-Z`/`Ctrl-Y` undo/redo; `Ctrl-X`/`Ctrl-C`/
+`Ctrl-V` cut/copy/paste (copies also go to the system clipboard through
+OSC 52); `Tab`/`Shift-Tab` indent; `Enter` keeps the indentation.
 
 **Diff / file viewer** — `j`/`k` scroll, `PgUp`/`PgDn`, `h`/`l` scroll
 sideways, `n`/`N` next/previous change (diff).
@@ -127,6 +137,11 @@ max_diff_chars = 20000
 ## Known limitations
 
 - **No Windows support.** Prebuilt binaries are macOS and Linux only.
+- **The built-in editor is simple.** No search/replace, no multiple
+  cursors, one file at a time. Binary files, files over 4 MiB and files
+  that aren't UTF-8 open read-only.
+  Copying to the system clipboard needs a terminal with OSC 52 (in tmux:
+  `set -g set-clipboard on`).
 - **Merges that end up identical to `HEAD`.** If every conflict is resolved
   back to the last commit's version, nothing is left staged and auri
   refuses the merge commit with "Nothing staged", even though git would

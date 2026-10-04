@@ -7,36 +7,66 @@ use ratatui::Frame;
 
 use crate::action::Action;
 use crate::component::Component;
+use crate::text;
 use crate::theme;
 
-use super::hitbox::Hitboxes;
+/// An open dialog: what `Action::Confirm` carried.
+struct Dialog {
+    prompt: String,
+    confirm_label: String,
+    then: Action,
+    alt: Option<(String, Action)>,
+}
+
+impl Dialog {
+    /// Button labels left to right: Cancel, the alternative (if any), the
+    /// confirm button.
+    fn labels(&self) -> Vec<&str> {
+        let mut out = vec!["Cancel"];
+        out.extend(self.alt.as_ref().map(|(l, _)| l.as_str()));
+        out.push(&self.confirm_label);
+        out
+    }
+}
 
 /// Modal confirmation overlay. Opens when an `Action::Confirm` is broadcast;
-/// while open it captures all input. `y`/Enter-on-confirm/clicking the
-/// confirm button returns the wrapped action; `n`/Esc/`q`, Enter on Cancel,
-/// or a click outside the box closes it and returns `None`.
+/// while open it captures all input. `y`, or Enter / a click on the confirm
+/// button, returns the wrapped action; the alternative button (when given)
+/// answers to its label's first letter, Enter or a click. `n`/Esc/`q`,
+/// Enter on Cancel, or a click outside the box closes it and returns `None`.
 #[derive(Default)]
 pub struct ConfirmDialog {
-    /// (prompt, confirm_label, action to run on confirm)
-    open: Option<(String, String, Action)>,
-    /// Which button is highlighted: false = Cancel (the default), true = the
-    /// confirm button.
-    confirm_selected: bool,
-    hitboxes: Hitboxes,
+    open: Option<Dialog>,
+    /// Highlighted button, an index into `Dialog::labels` (0 = Cancel, the
+    /// default).
+    selected: usize,
     dialog: Rect,
-    confirm_rect: Rect,
+    /// Where each button was drawn, same order as `labels`.
+    buttons: Vec<Rect>,
 }
 
 impl ConfirmDialog {
     fn close(&mut self) -> Option<Action> {
         self.open = None;
-        self.confirm_selected = false;
+        self.selected = 0;
         None
     }
 
-    fn confirm(&mut self) -> Option<Action> {
-        self.confirm_selected = false;
-        self.open.take().map(|(_, _, then)| then)
+    /// Activate button `i` (0 = Cancel, last = confirm).
+    fn press(&mut self, i: usize) -> Option<Action> {
+        let dialog = self.open.take()?;
+        self.selected = 0;
+        let last = dialog.labels().len() - 1;
+        match (i, dialog.alt) {
+            (0, _) => None,
+            (i, _) if i == last => Some(dialog.then),
+            (_, Some((_, alt))) => Some(alt),
+            (_, None) => None,
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.open.as_ref().map_or(0, |d| d.labels().len())
     }
 }
 
@@ -46,19 +76,24 @@ impl Component for ConfirmDialog {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
-        self.open.as_ref()?;
+        let dialog = self.open.as_ref()?;
+        let n = self.count();
+        let alt_key = dialog
+            .alt
+            .as_ref()
+            .and_then(|(l, _)| l.chars().next())
+            .map(|c| c.to_ascii_lowercase());
         match key.code {
-            KeyCode::Char('y') => self.confirm(),
+            KeyCode::Char('y') => self.press(n - 1),
+            KeyCode::Char(c) if Some(c) == alt_key => self.press(1),
             KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => self.close(),
-            KeyCode::Enter => {
-                if self.confirm_selected {
-                    self.confirm()
-                } else {
-                    self.close()
-                }
+            KeyCode::Enter => self.press(self.selected),
+            KeyCode::Tab | KeyCode::Right => {
+                self.selected = (self.selected + 1) % n;
+                None
             }
-            KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                self.confirm_selected = !self.confirm_selected;
+            KeyCode::BackTab | KeyCode::Left => {
+                self.selected = (self.selected + n - 1) % n;
                 None
             }
             _ => None,
@@ -68,13 +103,11 @@ impl Component for ConfirmDialog {
     fn handle_mouse(&mut self, ev: MouseEvent, _area: Rect) -> Option<Action> {
         self.open.as_ref()?;
         if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
-            if self.hitboxes.hit(ev.column, ev.row).is_some() {
-                if self.confirm_rect.contains((ev.column, ev.row).into()) {
-                    return self.confirm();
-                }
-                return self.close();
+            let pos = (ev.column, ev.row).into();
+            if let Some(i) = self.buttons.iter().position(|r| r.contains(pos)) {
+                return self.press(i);
             }
-            if !self.dialog.contains((ev.column, ev.row).into()) {
+            if !self.dialog.contains(pos) {
                 return self.close();
             }
         }
@@ -86,77 +119,94 @@ impl Component for ConfirmDialog {
             prompt,
             confirm_label,
             then,
+            alt,
         } = action
         {
-            self.open = Some((prompt.clone(), confirm_label.clone(), (**then).clone()));
-            self.confirm_selected = false;
+            self.open = Some(Dialog {
+                prompt: prompt.clone(),
+                confirm_label: confirm_label.clone(),
+                then: (**then).clone(),
+                alt: alt.as_ref().map(|(l, a)| (l.clone(), (**a).clone())),
+            });
+            self.selected = 0;
         }
         None
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, _focused: bool) {
-        self.hitboxes.clear();
-        let Some((prompt, confirm_label, then)) = &self.open else {
+        self.buttons.clear();
+        let Some(dialog) = &self.open else {
             return;
         };
 
-        let width = 50.min(area.width).max(20);
-        let height = 5.min(area.height);
-        let dialog = Rect::new(
+        let width = 56.min(area.width).max(20.min(area.width));
+        // Prompt rows (wrapped) + a blank row + the buttons, inside borders.
+        let prompt_rows =
+            text::width(&dialog.prompt).div_ceil(width.saturating_sub(2).max(1) as usize);
+        let height = (prompt_rows as u16 + 4).max(5).min(area.height);
+        let rect = Rect::new(
             area.x + (area.width.saturating_sub(width)) / 2,
             area.y + (area.height.saturating_sub(height)) / 2,
             width,
             height,
         );
-        self.dialog = dialog;
+        self.dialog = rect;
 
-        f.render_widget(Clear, dialog);
+        f.render_widget(Clear, rect);
         let block = Block::bordered()
             .border_style(theme::border(true))
             .style(theme::base());
-        let inner = block.inner(dialog);
-        f.render_widget(block, dialog);
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
         f.render_widget(
-            Paragraph::new(prompt.clone()).wrap(Wrap { trim: false }),
+            Paragraph::new(dialog.prompt.clone()).wrap(Wrap { trim: false }),
             inner,
         );
 
-        // Button row at the bottom of the box, centered: "[ Cancel ]" then
-        // "[ Discard ]" (or the given confirm label).
-        let cancel = "[ Cancel ]".to_string();
-        let confirm = format!("[ {confirm_label} ]");
-        let cancel_w = cancel.chars().count() as u16;
-        let confirm_w = confirm.chars().count() as u16;
-        let total = cancel_w + 1 + confirm_w;
+        // Button row at the bottom of the box, centered: "[ Cancel ]",
+        // "[ Discard ]"…, one column apart.
+        let labels: Vec<String> = dialog.labels().iter().map(|l| format!("[ {l} ]")).collect();
+        let total = labels
+            .iter()
+            .map(|l| text::width(l) as u16 + 1)
+            .sum::<u16>()
+            - 1;
         let y = inner.y + inner.height.saturating_sub(1);
-        let x = inner.x + (inner.width.saturating_sub(total)) / 2;
-        let cancel_rect = Rect::new(x, y, cancel_w, 1);
-        let confirm_rect = Rect::new(x + cancel_w + 1, y, confirm_w, 1);
-        self.confirm_rect = confirm_rect;
+        let mut x = inner.x + (inner.width.saturating_sub(total)) / 2;
+        let last = labels.len() - 1;
+        for (i, label) in labels.into_iter().enumerate() {
+            let w = text::width(&label) as u16;
+            let r = Rect::new(x, y, w.min(inner.right().saturating_sub(x)), 1);
+            let style = button_style(i, last, dialog.alt.is_some(), i == self.selected);
+            f.render_widget(Span::styled(label, style), r);
+            self.buttons.push(r);
+            x += w + 1;
+        }
+    }
+}
 
-        let cancel_style = if self.confirm_selected {
-            theme::muted()
-        } else {
-            Style::default()
-                .fg(theme::INK)
-                .bg(theme::LINE_2)
-                .add_modifier(Modifier::BOLD)
-        };
-        let discard_style = if self.confirm_selected {
-            Style::default()
-                .fg(theme::ON_GOLD)
-                .bg(theme::DEL_FG)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::DEL_FG).bg(theme::DEL_BG)
-        };
-        f.render_widget(Span::styled(cancel, cancel_style), cancel_rect);
-        f.render_widget(Span::styled(confirm, discard_style), confirm_rect);
-
-        // The cancel button's payload is ignored — `handle_mouse` checks
-        // `confirm_rect` to decide which button was hit.
-        self.hitboxes.push(cancel_rect, then.clone());
-        self.hitboxes.push(confirm_rect, then.clone());
+/// Cancel is neutral; the destructive button red: the confirm button in a
+/// two-button dialog, the alternative in a three-button one (whose confirm
+/// button is the safe, gold primary). Highlighted = filled.
+fn button_style(i: usize, last: usize, has_alt: bool, selected: bool) -> Style {
+    let danger = if has_alt { i == 1 } else { i == last };
+    let bold = Modifier::BOLD;
+    match (i, danger, selected) {
+        (0, _, true) => Style::default()
+            .fg(theme::INK)
+            .bg(theme::LINE_2)
+            .add_modifier(bold),
+        (0, _, false) => theme::muted(),
+        (_, true, true) => Style::default()
+            .fg(theme::ON_GOLD)
+            .bg(theme::DEL_FG)
+            .add_modifier(bold),
+        (_, true, false) => Style::default().fg(theme::DEL_FG).bg(theme::DEL_BG),
+        (_, false, true) => Style::default()
+            .fg(theme::ON_GOLD)
+            .bg(theme::GOLD)
+            .add_modifier(bold),
+        (_, false, false) => Style::default().fg(theme::GOLD).bg(theme::PANEL),
     }
 }
 
@@ -173,6 +223,7 @@ mod tests {
             prompt: "Discard changes?".to_string(),
             confirm_label: "Discard".to_string(),
             then: Box::new(Action::UnstageAll),
+            alt: None,
         }
     }
 
@@ -213,6 +264,49 @@ mod tests {
         assert!(d.handle_key(KeyEvent::from(KeyCode::Tab)).is_none());
         let act = d.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(matches!(act, Some(Action::UnstageAll)));
+        assert!(!d.captures_input());
+    }
+
+    fn three_buttons() -> Action {
+        Action::Confirm {
+            prompt: "Save changes?".to_string(),
+            confirm_label: "Save".to_string(),
+            then: Box::new(Action::StageAll),
+            alt: Some(("Discard".to_string(), Box::new(Action::UnstageAll))),
+        }
+    }
+
+    #[test]
+    fn alternative_button_by_key_tab_and_click() {
+        let mut d = ConfirmDialog::default();
+        d.update(&three_buttons());
+        assert!(matches!(d.handle_key(key('d')), Some(Action::UnstageAll)));
+
+        d.update(&three_buttons());
+        assert!(matches!(d.handle_key(key('y')), Some(Action::StageAll)));
+
+        // Tab: Cancel -> Discard -> Save.
+        d.update(&three_buttons());
+        d.handle_key(KeyEvent::from(KeyCode::Tab));
+        d.handle_key(KeyEvent::from(KeyCode::Tab));
+        let act = d.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(matches!(act, Some(Action::StageAll)));
+
+        // Clicks hit the button drawn there.
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        d.update(&three_buttons());
+        term.draw(|f| d.render(f, f.area(), true)).unwrap();
+        let discard = d.buttons[1];
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: discard.x + 1,
+            row: discard.y,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
+        assert!(matches!(
+            d.handle_mouse(click, Rect::default()),
+            Some(Action::UnstageAll)
+        ));
         assert!(!d.captures_input());
     }
 }

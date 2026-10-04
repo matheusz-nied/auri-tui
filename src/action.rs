@@ -15,7 +15,7 @@ pub enum PanelId {
     /// File tree (sidebar Explorer view).
     Explorer,
     DiffView,
-    /// Read-only file viewer; shares the main pane with `DiffView`.
+    /// File viewer/editor; shares the main pane with `DiffView`.
     FileView,
 }
 
@@ -78,10 +78,14 @@ pub enum Action {
     Discard(FileChange),
     /// Ask the user before running `then`: opens the confirmation overlay.
     /// `App` itself ignores this — `ConfirmDialog` picks it up via `update`.
+    /// `alt` adds a third button (label, action) between Cancel and the
+    /// confirm button — e.g. Discard in "Save / Discard / Cancel"; the
+    /// confirm button is then the safe primary one and `alt` the red one.
     Confirm {
         prompt: String,
         confirm_label: String,
         then: Box<Action>,
+        alt: Option<(String, Box<Action>)>,
     },
     /// Scroll the diff to the previous/next changed block (handled by
     /// `DiffView::update`; `App` ignores them).
@@ -124,10 +128,17 @@ pub enum Action {
     /// Open a workspace file in the file viewer; `App` reads it, makes the
     /// viewer own the main pane and broadcasts `FileLoaded`.
     OpenFile(String),
-    /// Edit a workspace file in `$VISUAL`/`$EDITOR`, at `line` (1-based)
-    /// when given. `App` hands the terminal over, waits for the editor to
-    /// exit, then refreshes.
-    OpenInEditor {
+    /// Edit a workspace file in the app (`i` in Changes and the diff):
+    /// `App` switches to the Explorer view, opens it (unless it is the open
+    /// file already) and focuses the editor, which starts editing at `line`
+    /// (1-based) via `StartEditing`.
+    EditFile {
+        path: String,
+        line: Option<usize>,
+    },
+    /// The file viewer switches `path` to edit mode, cursor on `line`
+    /// (1-based) when given (`App` ignores it).
+    StartEditing {
         path: String,
         line: Option<usize>,
     },
@@ -135,6 +146,37 @@ pub enum Action {
     FileLoaded(FileDoc),
     /// The open file changed on disk (receivers keep their scroll).
     FileReloaded(FileDoc),
+    /// Save the file being edited (`Ctrl-S`, or Save in the unsaved-changes
+    /// prompt). `FileView` answers with `WriteFile` — or, with nothing to
+    /// save, just `then`. `App` ignores it.
+    SaveFile {
+        then: Option<Box<Action>>,
+    },
+    /// Write `contents` to `path` (side effect, executed by `App`).
+    /// `version` is the editor buffer's version they came from; `force`
+    /// skips the changed-on-disk check (the user chose Overwrite). On
+    /// success `FileSaved` is broadcast, then `then` runs; a conflict asks.
+    WriteFile {
+        path: String,
+        contents: String,
+        version: u64,
+        force: bool,
+        then: Option<Box<Action>>,
+    },
+    /// `version` of `path` is on disk now — the editor is clean again
+    /// (unless edited meanwhile).
+    FileSaved {
+        path: String,
+        version: u64,
+    },
+    /// Throw the editor's unsaved changes away (back to the file as last
+    /// loaded or saved), then run `then`.
+    DiscardEdits {
+        then: Option<Box<Action>>,
+    },
+    /// Put text on the system clipboard (OSC 52; side effect, executed by
+    /// `App`).
+    CopyToClipboard(String),
     /// Collapse every explorer folder (toolbar button; `App` ignores it).
     ExplorerCollapseAll,
     /// Commit the staged changes with this message (side effect). `amend`

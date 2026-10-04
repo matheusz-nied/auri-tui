@@ -210,6 +210,7 @@ fn discard_confirm(f: &FileChange) -> Action {
         prompt,
         confirm_label: "Discard".to_string(),
         then: Box::new(Action::Discard(f.clone())),
+        alt: None,
     }
 }
 
@@ -245,7 +246,7 @@ impl Component for Changes {
                 .filter(can_discard)
                 .map(|f| discard_confirm(&f)),
             KeyCode::Char('a') => Some(Action::StageAll),
-            KeyCode::Char('o') => self.selected_file().map(|f| Action::OpenInEditor {
+            KeyCode::Char('i') => self.selected_file().map(|f| Action::EditFile {
                 path: f.path,
                 line: None,
             }),
@@ -329,7 +330,7 @@ impl Component for Changes {
     }
 
     fn hints(&self) -> &'static str {
-        "space stage/unstage · d discard · a stage all · enter diff · o edit"
+        "space stage/unstage · d discard · a stage all · enter diff · i edit"
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, focused: bool) {
@@ -692,12 +693,12 @@ mod tests {
     }
 
     #[test]
-    fn o_edits_the_selected_file() {
+    fn i_edits_the_selected_file() {
         let mut c = Changes::default();
         c.update(&Action::StatusLoaded(vec![fc("a.rs", Section::Unstaged)]));
         assert!(matches!(
-            c.handle_key(key(KeyCode::Char('o'))),
-            Some(Action::OpenInEditor { path, line: None }) if path == "a.rs"
+            c.handle_key(key(KeyCode::Char('i'))),
+            Some(Action::EditFile { path, line: None }) if path == "a.rs"
         ));
     }
 }

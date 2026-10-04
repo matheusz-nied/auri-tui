@@ -4,6 +4,18 @@ use ratatui::Frame;
 
 use crate::action::Action;
 
+/// What a panel that edits a document reports to `App` (keys, guards
+/// against losing unsaved work).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EditState {
+    /// In edit mode: keys are text, not commands.
+    pub inserting: bool,
+    /// The document has unsaved changes.
+    pub modified: bool,
+    /// Text is selected (Ctrl-C copies it instead of quitting).
+    pub selection: bool,
+}
+
 /// A UI panel. Components are pure UI: they may keep local state, return
 /// `Action`s from event handlers, and observe broadcast actions in `update`.
 /// They must never perform I/O or call git themselves — side effects belong to
@@ -49,6 +61,12 @@ pub trait Component {
     /// Rows this panel wants when the layout sizes it to its content (only
     /// the commit input's slot is). `None` keeps the layout's default.
     fn preferred_height(&self) -> Option<u16> {
+        None
+    }
+
+    /// Editing state, for a panel that edits a document (`FileView`, with a
+    /// file open). `None` for every other panel.
+    fn edit_state(&self) -> Option<EditState> {
         None
     }
 

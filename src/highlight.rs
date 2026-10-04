@@ -13,9 +13,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{
-    FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings,
+    FontStyle, HighlightState, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings,
 };
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::parsing::{ParseState, SyntaxReference, SyntaxSet};
 
 use crate::text;
 use crate::theme as palette;
@@ -26,6 +26,9 @@ const MAX_LINES: usize = 20_000;
 /// A line longer than this (minified code) stops highlighting for the rest
 /// of the document: the regex engine can take seconds on such lines.
 const MAX_LINE_BYTES: usize = 4096;
+/// The parser state is saved every this many lines, so an edit
+/// re-highlights from the checkpoint before it — not from the top.
+const CHECKPOINT: usize = 128;
 
 /// One colored run of a highlighted line.
 pub type Chunk = (Style, String);
@@ -126,6 +129,8 @@ pub struct Highlighter {
     state: Option<HighlightLines<'static>>,
     /// Highlighted lines `0..lines.len()`.
     lines: Vec<Vec<Chunk>>,
+    /// State before line `i * CHECKPOINT` (empty for plain text).
+    checkpoints: Vec<(HighlightState, ParseState)>,
 }
 
 impl Highlighter {
@@ -133,6 +138,7 @@ impl Highlighter {
         Self {
             state: None,
             lines: Vec::new(),
+            checkpoints: Vec::new(),
         }
     }
 
@@ -140,6 +146,33 @@ impl Highlighter {
         Self {
             state: find_syntax(path, first_line).map(|s| HighlightLines::new(s, theme())),
             lines: Vec::new(),
+            checkpoints: Vec::new(),
+        }
+    }
+
+    /// The document changed from line `line` on: forget the colors from
+    /// there and resume (on the next `advance`) from the checkpoint before
+    /// it. Also retries after giving up on an overlong line.
+    pub fn invalidate_from(&mut self, line: usize) {
+        if line >= self.lines.len() && self.state.is_some() {
+            return;
+        }
+        let k =
+            (line.min(self.lines.len()) / CHECKPOINT).min(self.checkpoints.len().saturating_sub(1));
+        let Some((h, p)) = self.checkpoints.get(k).cloned() else {
+            return;
+        };
+        self.checkpoints.truncate(k + 1);
+        self.lines.truncate(k * CHECKPOINT);
+        self.state = Some(HighlightLines::from_state(theme(), h, p));
+    }
+
+    /// Save the current state as the checkpoint for line `lines.len()`.
+    fn checkpoint(&mut self) {
+        if let Some(state) = self.state.take() {
+            let (h, p) = state.state();
+            self.checkpoints.push((h.clone(), p.clone()));
+            self.state = Some(HighlightLines::from_state(theme(), h, p));
         }
     }
 
@@ -152,13 +185,19 @@ impl Highlighter {
     /// Highlight up to line `upto` (exclusive). `all` must yield the
     /// document's lines from the very first one; lines already done are
     /// skipped.
-    pub fn advance<'a>(&mut self, all: impl IntoIterator<Item = &'a str>, upto: usize) {
+    pub fn advance<S: AsRef<str>>(&mut self, all: impl IntoIterator<Item = S>, upto: usize) {
         let upto = upto.min(MAX_LINES);
         let done = self.lines.len();
         if upto <= done {
             return;
         }
         for text in all.into_iter().skip(done).take(upto - done) {
+            let text = text.as_ref();
+            if self.lines.len().is_multiple_of(CHECKPOINT)
+                && self.checkpoints.len() == self.lines.len() / CHECKPOINT
+            {
+                self.checkpoint();
+            }
             let Some(state) = self.state.as_mut() else {
                 return;
             };
@@ -300,6 +339,45 @@ mod tests {
         h.advance(["let a = 1;", &long, "let b = 2;"], 3);
         assert_eq!(h.lines.len(), 1);
         assert!(!h.active());
+    }
+
+    #[test]
+    fn invalidate_resumes_from_a_checkpoint() {
+        // Line 300 is inside a block comment opened at line 200.
+        let mut src: Vec<String> = (0..400).map(|i| format!("let x{i} = {i};")).collect();
+        src[200] = "/*".to_string();
+        let mut h = Highlighter::for_file("a.rs", None);
+        h.advance(&src, 400);
+        let comment = h.spans(300, &src[300], 0, 100);
+        assert_eq!(comment.len(), 1, "{comment:?}");
+
+        // Closing the comment right away recolors line 300 after
+        // re-highlighting only from the checkpoint at line 128.
+        src[200] = "/* */".to_string();
+        h.invalidate_from(200);
+        assert_eq!(h.lines.len(), 128);
+        h.advance(&src, 400);
+        assert!(h.spans(300, &src[300], 0, 100).len() > 1);
+
+        // Edits past what is highlighted cost nothing.
+        let mut h = Highlighter::for_file("a.rs", None);
+        h.advance(&src, 10);
+        h.invalidate_from(50);
+        assert_eq!(h.lines.len(), 10);
+    }
+
+    #[test]
+    fn invalidate_retries_after_an_overlong_line() {
+        let long = "x".repeat(MAX_LINE_BYTES + 1);
+        let mut src = vec!["let a = 1;".to_string(), long, "let b = 2;".to_string()];
+        let mut h = Highlighter::for_file("a.js", None);
+        h.advance(&src, 3);
+        assert!(!h.active());
+        src[1] = "let c = 3;".to_string();
+        h.invalidate_from(1);
+        h.advance(&src, 3);
+        assert!(h.active());
+        assert_eq!(h.lines.len(), 3);
     }
 
     #[test]
