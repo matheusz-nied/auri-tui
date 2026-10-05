@@ -7,6 +7,8 @@ may include breaking changes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-05
+
 ### Added
 
 - `auri update`: installs the latest GitHub release in place of the
@@ -72,6 +74,7 @@ First public release.
 - Bracketed paste: pasted text keeps its line breaks and never commits.
 - `--help` and `--version`; `?` inside auri lists every key.
 
-[Unreleased]: https://github.com/matheusz-nied/auri-tui/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/matheusz-nied/auri-tui/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/matheusz-nied/auri-tui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/matheusz-nied/auri-tui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/matheusz-nied/auri-tui/releases/tag/v0.1.0
