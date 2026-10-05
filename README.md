@@ -37,9 +37,12 @@ with side-by-side diffs. Mouse and keyboard both work.
 # Shell installer (macOS / Linux)
 curl -LsSf https://github.com/matheusz-nied/auri-tui/releases/latest/download/auri-tui-installer.sh | sh
 
-# From source (Rust toolchain)ola
+# From source (Rust toolchain)
 cargo install auri-tui
 ```
+
+**Update** — `auri update` checks GitHub for a newer release and installs
+it in place of the running binary (needs `curl`).
 
 Prebuilt binaries are attached to every
 [GitHub release](https://github.com/matheusz-nied/auri-tui/releases).

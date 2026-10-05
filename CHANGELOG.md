@@ -7,6 +7,15 @@ may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `auri update`: installs the latest GitHub release in place of the
+  running binary.
+
+### Fixed
+
+- A stray word in the README's install instructions.
+
 ## [0.2.0] - 2026-10-05
 
 Edit files without leaving auri.

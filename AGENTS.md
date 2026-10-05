@@ -12,6 +12,11 @@ Layered and decoupled — the golden rule is **components never call git**
 
 ```
 main.rs        terminal init/restore (+ panic hook), CLI arg = repo path
+               (or `update`)
+update.rs      `auri update` (before the TUI starts): latest version from
+               the `releases/latest` redirect, then that release's `dist`
+               shell installer into this binary's dir — pure helpers
+               (`parse_tag`, `is_newer`, `install_target`) unit-tested
 app.rs         App: owns components, focus, last-frame rects, the action queue.
                The ONLY place git (via `GitJobs`) and FsBackend are used;
                results are broadcast back as actions.

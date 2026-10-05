@@ -21,9 +21,13 @@ const USAGE: &str = "\
 auri — browse files and git diffs side by side, right in your terminal
 
 Usage: auri [REPO]
+       auri update
 
 Arguments:
   [REPO]  Path inside a git repository (default: current directory)
+
+Commands:
+  update  Install the latest release in place of this binary
 
 Options:
   -h, --help     Print help
@@ -44,6 +48,8 @@ fn main() -> Result<()> {
             println!("auri {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
+        // A directory named `update` still opens as `auri ./update`.
+        "update" => return auri_tui::update::run(),
         _ => {}
     }
     let root = resolve_toplevel(&PathBuf::from(arg))?;
