@@ -7,6 +7,31 @@ may include breaking changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-05
+
+Edit files without leaving auri.
+
+### Added
+
+- Built-in editor in the file viewer: `i` (or `Enter`) starts editing,
+  `Esc` stops. `i` in Changes or in a diff opens that file in the editor —
+  from a diff, at the first change in view.
+- Nothing is saved automatically: `Ctrl-S` saves, and the title shows `●`
+  while there are unsaved changes. Saves are atomic and keep the file's
+  line endings, final newline, permissions and symlinks.
+- Unsaved changes are never lost silently: quitting or opening another
+  file asks Save / Discard / Cancel (`Ctrl-C` twice quits anyway). If the
+  file changes on disk meanwhile, your edits are kept and saving asks
+  whether to overwrite it or reload it.
+- Selection (Shift+arrows, mouse drag), undo/redo (`Ctrl-Z`/`Ctrl-Y`),
+  cut/copy/paste (`Ctrl-X`/`Ctrl-C`/`Ctrl-V`, copies also reach the
+  system clipboard through OSC 52), word moves, `Tab`/`Shift-Tab` indent
+  and auto-indent on `Enter`.
+
+### Removed
+
+- `o` (open in `$VISUAL`/`$EDITOR`): editing now happens inside auri.
+
 ## [0.1.0] - 2026-10-03
 
 First public release.
@@ -38,5 +63,6 @@ First public release.
 - Bracketed paste: pasted text keeps its line breaks and never commits.
 - `--help` and `--version`; `?` inside auri lists every key.
 
-[Unreleased]: https://github.com/matheusz-nied/auri-tui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/matheusz-nied/auri-tui/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/matheusz-nied/auri-tui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/matheusz-nied/auri-tui/releases/tag/v0.1.0

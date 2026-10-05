@@ -1,6 +1,6 @@
 [package]
 name = "auri-tui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Browse files and git diffs side by side, right in your terminal"
 license = "MIT"
