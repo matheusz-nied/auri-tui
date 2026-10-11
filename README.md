@@ -53,9 +53,16 @@ the best highlighting.
 ## Usage
 
 ```sh
-auri            # current repository
-auri path/to/repo
+auri            # current folder or repository
+auri path/to/folder
 ```
+
+Folders without Git open in the Explorer with file previews, editing and
+explicit saving. Source Control, history and AI commit messages require a
+Git repository. To create one, click **Initialize Git** (or press `c`) and
+confirm **Initialize**. Source Control becomes available immediately; files
+are not staged or committed automatically. Inside a repository, auri opens
+its worktree root.
 
 The left sidebar has two views — **Explorer** and **Source Control** —
 switch with the tab bar, `e` or `c`. The right side shows the open file or

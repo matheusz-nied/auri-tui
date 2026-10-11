@@ -33,6 +33,35 @@ fn make_repo() -> TempDir {
 }
 
 #[test]
+fn initialize_creates_a_repo_without_staging_or_committing_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file.txt"), "hello\n").unwrap();
+    let backend = CliGit::new(dir.path());
+    backend.initialize().unwrap();
+    assert!(dir.path().join(".git").is_dir());
+    assert!(backend.head().unwrap().is_none());
+    let files = backend.status().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].section, Section::Untracked);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+        "hello\n"
+    );
+    backend.initialize().unwrap();
+    assert_eq!(backend.status().unwrap(), files);
+}
+
+#[test]
+fn initialize_never_creates_a_nested_repo_in_an_existing_worktree() {
+    let dir = make_repo();
+    let nested = dir.path().join("nested");
+    fs::create_dir(&nested).unwrap();
+    let error = CliGit::new(&nested).initialize().unwrap_err();
+    assert!(error.to_string().contains("reopen Auri"));
+    assert!(!nested.join(".git").exists());
+}
+
+#[test]
 fn status_reports_sections() {
     let dir = make_repo();
     let git = CliGit::new(dir.path());

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::fs::{DirEntry, FileDoc};
@@ -52,6 +53,13 @@ pub enum Action {
     Quit,
     /// Reload git status and branch name (side effect, executed by `App`).
     Refresh,
+    /// Initialize Git in this workspace (side effect, on the git worker).
+    InitializeRepository,
+    /// Git initialization succeeded; enable Source Control and refresh.
+    RepositoryInitialized {
+        git_dir: PathBuf,
+        common_dir: PathBuf,
+    },
     FocusNext,
     FocusPrev,
     Focus(PanelId),

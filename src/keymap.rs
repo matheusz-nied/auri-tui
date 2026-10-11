@@ -193,7 +193,7 @@ pub const GLOBAL: &[Binding] = &[
         C::FocusCommit,
         Navigation,
         "c",
-        "Source Control view, commit box",
+        "Source Control / commit box (initialize Git if needed)",
         Some("c git"),
     ),
     bind(

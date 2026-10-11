@@ -178,6 +178,20 @@ impl FsWatcher {
                 .with_context(|| format!("watch: {}", p.display()))
         };
         let filter = PathFilter::new(canon(root)?, canon(git_dir)?, canon(common_dir)?);
+        Self::start_filter(filter)
+    }
+
+    /// Watch an ordinary folder with the same worktree filters. The `.git`
+    /// paths only exclude metadata; they do not need to exist.
+    pub fn start_workspace(root: &Path) -> Result<Self> {
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("watch: {}", root.display()))?;
+        let git_dir = root.join(".git");
+        Self::start_filter(PathFilter::new(root, git_dir.clone(), git_dir))
+    }
+
+    fn start_filter(filter: PathFilter) -> Result<Self> {
         let (raw_tx, raw_rx) = mpsc::channel();
         let mut watcher = RecommendedWatcher::new(raw_tx, notify::Config::default())?;
         // FSEvents and ReadDirectoryChangesW watch a whole tree natively, at
@@ -200,7 +214,7 @@ impl FsWatcher {
                 paths.add(root, RecursiveMode::Recursive)?;
             }
             // Under the root, the recursive watch already covers the git dir.
-            if walk || !filter.git_dir.starts_with(root) {
+            if (walk || !filter.git_dir.starts_with(root)) && filter.git_dir.is_dir() {
                 paths.add(&filter.git_dir, RecursiveMode::NonRecursive)?;
                 if filter.common_dir != filter.git_dir {
                     paths.add(&filter.common_dir, RecursiveMode::NonRecursive)?;
@@ -486,6 +500,32 @@ mod tests {
         d.event(now);
         assert_eq!(d.timeout(now), Some(Duration::ZERO));
         assert_eq!(d.take_due(now), Some(now));
+    }
+
+    #[test]
+    fn fs_watcher_reports_changes_in_a_plain_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut watcher = FsWatcher::start_workspace(dir.path()).unwrap();
+        // FSEvents starts asynchronously; let registration settle before
+        // the write, as in the repository watcher test below.
+        thread::sleep(Duration::from_millis(500));
+        while watcher.poll().is_some() {}
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match watcher.poll() {
+                Some(WatchEvent::Changed { .. }) => break,
+                Some(other) => panic!("unexpected {other:?}"),
+                None => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no change reported in plain folder"
+                    );
+                    thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        assert!(!dir.path().join(".git").exists());
     }
 
     /// The real watcher on a temp dir: worktree writes are reported, git

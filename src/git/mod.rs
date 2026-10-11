@@ -111,6 +111,11 @@ pub enum DiffSource {
 pub trait GitBackend {
     /// The repository toplevel this backend operates on.
     fn root(&self) -> PathBuf;
+    /// Initialize a repository in this backend's workspace root and
+    /// return its absolute git dir and common dir for the watcher.
+    fn initialize(&self) -> Result<(PathBuf, PathBuf)> {
+        anyhow::bail!("repository initialization is not supported by this backend")
+    }
     fn status(&self) -> Result<Vec<FileChange>>;
     fn diff(&self, file: &FileChange) -> Result<DiffDoc>;
     fn stage(&self, path: &str) -> Result<()>;

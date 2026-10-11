@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -33,7 +34,7 @@ use crate::keymap::{self, Command, HelpSection};
 use crate::layout::{self, Sidebar, SidebarView};
 use crate::prefs::{Preferences, PrefsStore};
 use crate::theme;
-use crate::watch::{RepoWatcher, WatchEvent};
+use crate::watch::{FsWatcher, RepoWatcher, WatchEvent};
 
 /// The file shown by `FileView`; `stamp` is its state when last read (or
 /// saved), compared on refresh to decide whether to re-read it and on save
@@ -83,6 +84,8 @@ impl TerminalHandoff for NoHandoff {
 /// ones as `GitJob`s on the worker — and their results are broadcast back
 /// to all components as new actions.
 pub struct App {
+    root: PathBuf,
+    initializing_repository: bool,
     /// Git jobs (worker thread, or inline in tests) plus the UI thread's
     /// own backend for the few synchronous calls.
     git: GitJobs,
@@ -219,13 +222,34 @@ impl App {
         fs: Box<dyn FsBackend>,
         store: Box<dyn PrefsStore>,
     ) -> Self {
-        let root_name = git
-            .root()
+        let root = git.root();
+        Self::workspace(&root, GitJobs::inline(git), fs, store)
+    }
+
+    /// Open an ordinary folder with the Explorer and editor, without Git.
+    pub fn without_git(
+        git: Box<dyn GitBackend>,
+        fs: Box<dyn FsBackend>,
+        store: Box<dyn PrefsStore>,
+    ) -> Self {
+        let root = git.root();
+        Self::workspace(&root, GitJobs::inactive(git), fs, store)
+    }
+
+    fn workspace(
+        root: &Path,
+        git: GitJobs,
+        fs: Box<dyn FsBackend>,
+        store: Box<dyn PrefsStore>,
+    ) -> Self {
+        let root_name = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let mut app = Self {
-            git: GitJobs::inline(git),
+            root: root.to_path_buf(),
+            initializing_repository: false,
+            git,
             refresh_in_flight: false,
             refresh_again: false,
             fs,
@@ -290,6 +314,9 @@ impl App {
                 )));
             }
         }
+        if app.git.backend().is_none() {
+            app.sidebar.view = SidebarView::Explorer;
+        }
         // A persisted Explorer view starts focused on the tree.
         app.ensure_focus_visible();
         app.enqueue(Action::PreferencesChanged(app.prefs.clone()));
@@ -319,6 +346,11 @@ impl App {
     /// Refresh when the repo changes, with the tick as a slow safety net.
     /// `Err` (no watcher could start) keeps the fast tick and says so.
     pub fn with_watcher(mut self, watcher: Result<Box<dyn RepoWatcher>>) -> Self {
+        self.set_watcher(watcher);
+        self
+    }
+
+    fn set_watcher(&mut self, watcher: Result<Box<dyn RepoWatcher>>) {
         match watcher {
             Ok(w) => {
                 self.watcher = Some(w);
@@ -326,7 +358,6 @@ impl App {
             }
             Err(e) => self.stop_watching(&format!("{e:#}")),
         }
-        self
     }
 
     /// Back to polling every `POLL_TICK`, with a warning.
@@ -454,6 +485,9 @@ impl App {
     /// and, for a reload, only if it changed; HEAD reloads history when it
     /// moved.
     fn accept(&mut self, done: Done) {
+        if done.job == GitJob::Initialize {
+            self.initializing_repository = false;
+        }
         for result in done.results {
             match result {
                 GitResult::Action(action) => self.enqueue(action),
@@ -502,6 +536,10 @@ impl App {
     /// Start a git refresh, or — while one runs — one more right after it
     /// (what changed meanwhile must show up).
     fn request_refresh(&mut self) {
+        if self.git.backend().is_none() {
+            self.refresh_started = Some(Instant::now());
+            return;
+        }
         if self.refresh_in_flight {
             self.refresh_again = true;
         } else {
@@ -573,6 +611,33 @@ impl App {
             Action::Refresh => {
                 self.request_refresh();
                 self.reload_open_file();
+            }
+            Action::InitializeRepository => {
+                if self.git.backend().is_some() || self.initializing_repository {
+                    return;
+                }
+                self.initializing_repository = true;
+                self.notify("Initializing Git repository…", false);
+                self.git.submit(GitJob::Initialize);
+            }
+            Action::RepositoryInitialized {
+                git_dir,
+                common_dir,
+            } => {
+                self.git.activate();
+                self.self_write_until = Some(Instant::now() + SELF_WRITE_GRACE);
+                self.notify("Git repository initialized", false);
+                // The workspace watcher excludes .git; replace it with one
+                // that also watches HEAD, index and refs. If watching was
+                // unavailable, the existing polling fallback still works.
+                if self.watcher.is_some() {
+                    let watcher = FsWatcher::start(&self.root, &git_dir, &common_dir)
+                        .map(|w| Box::new(w) as Box<dyn RepoWatcher>);
+                    self.pending_change = None;
+                    self.set_watcher(watcher);
+                }
+                self.show_view(SidebarView::SourceControl, PanelId::Changes);
+                self.enqueue(Action::Refresh);
             }
             Action::StatusLoaded(files) => {
                 self.last_status = files;
@@ -684,7 +749,12 @@ impl App {
     /// Persist the sidebar layout when it changed and no drag is in flight.
     /// Called once per loop iteration after `dispatch`.
     fn sync_prefs(&mut self) {
-        let cur = self.sidebar.to_prefs();
+        let mut cur = self.sidebar.to_prefs();
+        if self.git.backend().is_none() {
+            // The Explorer fallback is local to this folder; keep the
+            // user's preferred view for the next repository.
+            cur.sidebar_view = self.prefs.layout.sidebar_view;
+        }
         if self.sidebar.is_dragging() || cur == self.prefs.layout {
             return;
         }
@@ -768,7 +838,10 @@ impl App {
         // The prompt is the staged patch: it must include a stage queued
         // just before.
         self.finish_git_jobs();
-        let git = self.git.backend();
+        let Some(git) = self.git.backend() else {
+            self.notify("AI commit messages require a Git repository", true);
+            return;
+        };
         if let Err(e) = git_worker::check_staged(git, false) {
             self.enqueue(Action::Error(e));
             return;
@@ -792,7 +865,7 @@ impl App {
                 return;
             }
         };
-        let cmd = ai::command(&self.prefs.ai, &self.git.backend().root());
+        let cmd = ai::command(&self.prefs.ai, &git.root());
         match self.ai.start(cmd, prompt) {
             Ok(()) => {
                 let provider = self.ai_provider_label();
@@ -865,18 +938,22 @@ impl App {
     /// stage pressed just before must be in), with the terminal handed
     /// over — the UI waits for it, as the user is busy at the prompt.
     fn commit(&mut self, message: String, amend: bool) {
-        if !self.git.backend().commit_may_prompt() {
+        let Some(git) = self.git.backend() else {
+            self.notify("Committing requires a Git repository", true);
+            return;
+        };
+        if !git.commit_may_prompt() {
             self.git.submit(GitJob::Commit { message, amend });
             return;
         }
         self.finish_git_jobs();
-        let git = self.git.backend();
+        let git = self.git.backend().expect("repository backend");
         if let Err(e) = git_worker::check_staged(git, amend) {
             self.enqueue(Action::Error(e));
             return;
         }
         self.terminal.release();
-        let result = self.git.backend().commit(&message, amend);
+        let result = git.commit(&message, amend);
         self.terminal.reclaim();
         self.needs_clear = true;
         self.accept(Done {
@@ -1031,6 +1108,19 @@ impl App {
     /// sidebar. Focus on the main pane stays on the main pane; focus on a
     /// sidebar panel moves to the new view's list.
     fn set_view(&mut self, view: SidebarView) {
+        if view == SidebarView::SourceControl && self.git.backend().is_none() {
+            if self.initializing_repository {
+                self.notify("Initializing Git repository…", false);
+            } else {
+                self.enqueue(Action::Confirm {
+                    prompt: format!("Initialize a Git repository in {}?", self.root.display()),
+                    confirm_label: "Initialize".to_string(),
+                    then: Box::new(Action::InitializeRepository),
+                    alt: None,
+                });
+            }
+            return;
+        }
         let on_main = matches!(self.focus, PanelId::DiffView | PanelId::FileView);
         self.sidebar.visible = true;
         self.sidebar.view = view;
@@ -1069,7 +1159,9 @@ impl App {
     /// Show the sidebar in `view` and focus `panel` inside it.
     fn show_view(&mut self, view: SidebarView, panel: PanelId) {
         self.set_view(view);
-        self.focus = panel;
+        if self.panel_visible(panel) {
+            self.focus = panel;
+        }
     }
 
     fn cycle_focus(&mut self, delta: isize) {
@@ -1308,7 +1400,13 @@ impl App {
         }
         self.tab_hits.clear();
         if let Some(r) = pr.tabs {
-            view_tabs::render(f, r, self.sidebar.view, &mut self.tab_hits);
+            view_tabs::render(
+                f,
+                r,
+                self.sidebar.view,
+                self.git.backend().is_some(),
+                &mut self.tab_hits,
+            );
         }
         // Recolor the divider columns and the changes/history split row while
         // hovered/dragged so the user can see they are draggable.
@@ -1340,7 +1438,9 @@ impl App {
 
     fn render_status_bar(&self, f: &mut Frame) {
         let area = self.status_bar;
-        let branch = if self.branch.is_empty() {
+        let branch = if self.git.backend().is_none() {
+            "No Git repository".to_string()
+        } else if self.branch.is_empty() {
             "-".to_string()
         } else {
             self.branch.clone()
@@ -1665,6 +1765,192 @@ mod tests {
         app.enqueue(Action::Refresh);
         app.dispatch();
         (app, fs)
+    }
+
+    #[test]
+    fn plain_folder_starts_in_explorer_and_refreshes_without_git() {
+        let mut prefs = Preferences::default();
+        prefs.layout.sidebar_view = SidebarView::SourceControl;
+        let store = MemoryStore::new(Some(prefs));
+        let mut app = App::without_git(
+            Box::new(FakeGit::default()),
+            Box::new(FakeFs::sample()),
+            Box::new(store.clone()),
+        );
+        for _ in 0..3 {
+            app.enqueue(Action::Refresh);
+            app.dispatch();
+            assert!(!app.git.busy());
+            assert!(!app.refresh_in_flight);
+            assert!(app.message.is_none());
+        }
+        assert_eq!(app.sidebar.view, SidebarView::Explorer);
+        assert_eq!(app.focus, PanelId::Explorer);
+        let text = screen(&mut app);
+        assert!(text.contains("README.md"), "{text}");
+        assert!(text.contains("No Git repository"), "{text}");
+        app.sync_prefs();
+        assert_eq!(
+            store.save_count(),
+            0,
+            "fallback must not replace preferred view"
+        );
+        app.toggle_sidebar();
+        app.sync_prefs();
+        assert_eq!(
+            store.saved().unwrap().layout.sidebar_view,
+            SidebarView::SourceControl
+        );
+    }
+
+    #[test]
+    fn plain_folder_offers_initialization_and_keeps_git_actions_blocked() {
+        let mut app = App::without_git(
+            Box::new(FakeGit::default()),
+            Box::new(FakeFs::sample()),
+            Box::new(MemoryStore::new(None)),
+        );
+        app.dispatch();
+        for key in ['c', '1', '3'] {
+            press(&mut app, KeyEvent::from(KeyCode::Char(key)));
+            assert_eq!(app.sidebar.view, SidebarView::Explorer);
+            assert_eq!(app.focus, PanelId::Explorer);
+            assert!(app.key_ctx().overlay);
+            press(&mut app, KeyEvent::from(KeyCode::Esc));
+        }
+        app.enqueue(Action::SetSidebarView(SidebarView::SourceControl));
+        app.dispatch();
+        assert_eq!(app.sidebar.view, SidebarView::Explorer);
+        assert!(app.key_ctx().overlay);
+        press(&mut app, KeyEvent::from(KeyCode::Esc));
+        for action in [
+            Action::StageAll,
+            Action::LoadHistory { skip: 0 },
+            Action::Commit {
+                message: "message".to_string(),
+                amend: false,
+            },
+            Action::GenerateCommitMessage,
+        ] {
+            app.enqueue(action);
+            app.dispatch();
+            assert!(app.message.as_ref().unwrap().0.contains("Git repository"));
+            assert!(!app.git.busy());
+            assert!(!app.ai.is_running());
+        }
+    }
+
+    #[test]
+    fn plain_folder_can_edit_save_and_reload_files() {
+        let fs = FakeFs::sample();
+        let mut app = App::without_git(
+            Box::new(FakeGit::default()),
+            Box::new(fs.clone()),
+            Box::new(MemoryStore::new(None)),
+        );
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.dispatch();
+        press(&mut app, KeyEvent::from(KeyCode::Char('2')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('i')));
+        type_text(&mut app, "new ");
+        assert_eq!(disk(&fs, "README.md"), "hello readme");
+        press(&mut app, ctrl_key('s'));
+        assert_eq!(disk(&fs, "README.md"), "new hello readme");
+        assert!(!app.file_modified());
+        assert!(matches!(&app.message, Some((m, false)) if m == "Saved README.md"));
+        fs.write("README.md", "external edit");
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        assert!(screen(&mut app).contains("external edit"));
+        assert!(!app.message.as_ref().is_some_and(|(_, is_error)| *is_error));
+    }
+
+    fn local_plain_folder() -> (App, tempfile::TempDir) {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().canonicalize().unwrap();
+        std::fs::write(root.join("README.md"), "hello\n").unwrap();
+        let mut app = App::without_git(
+            Box::new(crate::git::cli::CliGit::new(root.clone())),
+            Box::new(crate::fs::local::LocalFs::new(root)),
+            Box::new(MemoryStore::new(None)),
+        );
+        app.enqueue(Action::Refresh);
+        app.dispatch();
+        (app, folder)
+    }
+
+    #[test]
+    fn initialize_repository_requires_confirmation_and_can_be_cancelled() {
+        let (mut app, folder) = local_plain_folder();
+        let text = screen(&mut app);
+        assert!(text.contains("Initialize Git"), "{text}");
+        // The tab and keyboard open the same prompt; neither writes yet.
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 35, 0));
+        app.dispatch();
+        assert!(app.key_ctx().overlay);
+        assert!(!folder.path().join(".git").exists());
+        press(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert!(!app.key_ctx().overlay);
+        assert!(!folder.path().join(".git").exists());
+        press(&mut app, KeyEvent::from(KeyCode::Char('c')));
+        assert!(app.key_ctx().overlay);
+        press(&mut app, KeyEvent::from(KeyCode::Esc));
+        assert!(!folder.path().join(".git").exists());
+        assert!(app.git.backend().is_none());
+        assert_eq!(app.focus, PanelId::Explorer);
+    }
+
+    #[test]
+    fn initialize_repository_enables_git_and_preserves_unsaved_edits() {
+        let (mut app, folder) = local_plain_folder();
+        app.enqueue(Action::OpenFile("README.md".to_string()));
+        app.dispatch();
+        press(&mut app, KeyEvent::from(KeyCode::Char('2')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('i')));
+        type_text(&mut app, "new ");
+        press(&mut app, KeyEvent::from(KeyCode::Esc));
+        press(&mut app, KeyEvent::from(KeyCode::Char('c')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert!(folder.path().join(".git").is_dir());
+        assert!(app.git.backend().is_some());
+        assert!(!app.initializing_repository);
+        assert_eq!(app.sidebar.view, SidebarView::SourceControl);
+        assert_eq!(app.focus, PanelId::Changes);
+        let git = app.git.backend().unwrap();
+        assert!(git.head().unwrap().is_none());
+        assert_eq!(app.last_status.len(), 1);
+        assert_eq!(app.last_status[0].section, Section::Untracked);
+        assert_eq!(
+            std::fs::read_to_string(folder.path().join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(app.file_modified());
+        assert!(screen(&mut app).contains("Source Control"));
+        press(&mut app, KeyEvent::from(KeyCode::Char('e')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('2')));
+        assert!(screen(&mut app).contains("new hello"));
+        press(&mut app, ctrl_key('s'));
+        assert_eq!(
+            std::fs::read_to_string(folder.path().join("README.md")).unwrap(),
+            "new hello\n"
+        );
+    }
+
+    #[test]
+    fn failed_initialization_keeps_explorer_usable_and_can_be_retried() {
+        let (mut app, folder) = local_plain_folder();
+        let metadata = folder.path().join(".git");
+        std::fs::write(&metadata, "invalid gitfile\n").unwrap();
+        press(&mut app, KeyEvent::from(KeyCode::Char('c')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert!(app.git.backend().is_none());
+        assert!(!app.initializing_repository);
+        assert_eq!(app.sidebar.view, SidebarView::Explorer);
+        assert!(matches!(&app.message, Some((m, true)) if m.contains("git init:")));
+        std::fs::remove_file(metadata).unwrap();
+        press(&mut app, KeyEvent::from(KeyCode::Char('c')));
+        press(&mut app, KeyEvent::from(KeyCode::Char('y')));
+        assert!(app.git.backend().is_some());
     }
 
     /// Render the whole app into a 120x30 test terminal and return its text.

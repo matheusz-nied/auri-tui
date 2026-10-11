@@ -20,6 +20,7 @@ use crate::git::{DiffDoc, DiffSource, FileChange, GitBackend, Section};
 /// Work for the git worker. Each produces `GitResult`s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GitJob {
+    Initialize,
     /// Status, branch and HEAD.
     Refresh,
     /// The diff for the main pane; `fresh` = newly selected (scroll resets)
@@ -108,6 +109,13 @@ pub fn commit_results(result: anyhow::Result<()>, amend: bool) -> Vec<GitResult>
 /// Run one job against `git`.
 pub fn run_job(git: &dyn GitBackend, job: &GitJob) -> Vec<GitResult> {
     match job {
+        GitJob::Initialize => match git.initialize() {
+            Ok((git_dir, common_dir)) => vec![GitResult::Action(Action::RepositoryInitialized {
+                git_dir,
+                common_dir,
+            })],
+            Err(e) => vec![error(format!("git init: {e}"))],
+        },
         GitJob::Refresh => {
             let mut out = Vec::new();
             out.push(match git.status() {
@@ -178,6 +186,9 @@ pub fn run_job(git: &dyn GitBackend, job: &GitJob) -> Vec<GitResult> {
 /// queued change.
 pub struct GitJobs {
     git: Box<dyn GitBackend>,
+    /// An ordinary folder keeps a backend only for initialization. Other
+    /// jobs and synchronous calls are blocked until App activates it.
+    enabled: bool,
     /// Finished jobs waiting for `poll` (inline mode, or a dead worker).
     ready: VecDeque<Done>,
     /// `None`: jobs run inline on `submit`.
@@ -196,9 +207,24 @@ impl GitJobs {
     pub fn inline(git: Box<dyn GitBackend>) -> Self {
         Self {
             git,
+            enabled: true,
             ready: VecDeque::new(),
             worker: None,
         }
+    }
+
+    /// A filesystem-only workspace, until initialization succeeds.
+    pub fn inactive(git: Box<dyn GitBackend>) -> Self {
+        Self {
+            git,
+            enabled: false,
+            ready: VecDeque::new(),
+            worker: None,
+        }
+    }
+
+    pub fn activate(&mut self) {
+        self.enabled = true;
     }
 
     /// From now on, run jobs on a worker thread that owns `worker` (another
@@ -218,11 +244,20 @@ impl GitJobs {
     }
 
     /// The UI thread's backend, for synchronous calls.
-    pub fn backend(&self) -> &dyn GitBackend {
-        &*self.git
+    pub fn backend(&self) -> Option<&dyn GitBackend> {
+        self.enabled.then_some(&*self.git)
     }
 
     pub fn submit(&mut self, job: GitJob) {
+        if !self.enabled && job != GitJob::Initialize {
+            self.ready.push_back(Done {
+                job,
+                results: vec![error(
+                    "Source Control requires a Git repository".to_string(),
+                )],
+            });
+            return;
+        }
         let Some(worker) = &mut self.worker else {
             let results = run_job(&*self.git, &job);
             self.ready.push_back(Done { job, results });
@@ -238,11 +273,16 @@ impl GitJobs {
 
     /// The worker thread is gone (it panicked) with its in-flight jobs:
     /// run inline from now on and say so. The notice is filed as a
-    /// `Refresh` so `App` stops waiting for one that may have been lost.
+    /// `Refresh` (or `Initialize` in a plain folder) so App stops waiting
+    /// for a job that may have been lost.
     fn worker_died(&mut self) {
         self.worker = None;
         self.ready.push_back(Done {
-            job: GitJob::Refresh,
+            job: if self.enabled {
+                GitJob::Refresh
+            } else {
+                GitJob::Initialize
+            },
             results: vec![error(
                 "git worker stopped — git now runs on the UI thread".to_string(),
             )],
@@ -388,6 +428,13 @@ mod tests {
         fn root(&self) -> PathBuf {
             PathBuf::from("/repo")
         }
+        fn initialize(&self) -> anyhow::Result<(PathBuf, PathBuf)> {
+            if let Some(gate) = &self.gate {
+                gate.lock().unwrap().recv().unwrap();
+            }
+            self.log("init");
+            Ok((PathBuf::from("/repo/.git"), PathBuf::from("/repo/.git")))
+        }
         fn status(&self) -> Result<Vec<FileChange>> {
             self.log("status");
             let section = if self.staged {
@@ -530,6 +577,35 @@ mod tests {
             ["LastCommitMessageLoaded(\"last\")"]
         );
         assert!(!jobs.busy());
+    }
+
+    #[test]
+    fn initialization_runs_on_the_worker_and_other_jobs_wait_for_activation() {
+        let (release, gate) = mpsc::channel();
+        let worker = Fake {
+            gate: Some(Mutex::new(gate)),
+            ..Fake::default()
+        };
+        let calls = Arc::clone(&worker.calls);
+        let mut jobs = GitJobs::inactive(Box::new(Fake::default()));
+        jobs.spawn_worker(Box::new(worker));
+        jobs.submit(GitJob::Initialize);
+        assert!(jobs.busy());
+        assert!(jobs.backend().is_none());
+        jobs.submit(GitJob::StageAll);
+        let blocked = jobs.poll();
+        assert_eq!(blocked.len(), 1);
+        assert!(actions(&blocked[0].results)[0].contains("requires a Git repository"));
+        release.send(()).unwrap();
+        let done = jobs.wait_idle();
+        assert!(actions(&done[0].results)[0].starts_with("RepositoryInitialized"));
+        assert_eq!(*calls.lock().unwrap(), ["init"]);
+        assert!(jobs.backend().is_none(), "App activates only on success");
+        jobs.activate();
+        assert!(jobs.backend().is_some());
+        jobs.submit(GitJob::Refresh);
+        let done = jobs.wait_idle();
+        assert!(actions(&done[0].results)[0].starts_with("StatusLoaded"));
     }
 
     /// A worker whose first job (a stage) blocks until `release` is sent.

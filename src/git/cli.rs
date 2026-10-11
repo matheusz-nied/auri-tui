@@ -117,6 +117,20 @@ impl GitBackend for CliGit {
         self.root.clone()
     }
 
+    fn initialize(&self) -> Result<(PathBuf, PathBuf)> {
+        // A repository may have appeared since the workspace was opened.
+        // Reuse it if it has this root; never create a nested repository
+        // inside a newly discovered parent worktree.
+        if let Some(root) = find_toplevel(&self.root)? {
+            if root.canonicalize()? != self.root.canonicalize()? {
+                bail!("this folder is now inside a Git repository; reopen Auri at its root");
+            }
+            return git_dirs(&self.root);
+        }
+        self.run(&["init"], &[])?;
+        git_dirs(&self.root)
+    }
+
     fn status(&self) -> Result<Vec<FileChange>> {
         let out = self.run(
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -412,18 +426,26 @@ pub fn git_dirs(root: &Path) -> Result<(PathBuf, PathBuf)> {
 /// Resolve the toplevel of the repo containing `path`. Errors when `path` is
 /// not inside a git repository (or git can't be spawned).
 pub fn resolve_toplevel(path: &Path) -> Result<PathBuf> {
+    find_toplevel(path)?
+        .with_context(|| format!("'{}' is not inside a git repository", path.display()))
+}
+
+/// Find a worktree root, or `None` for an ordinary directory. Other git
+/// failures (missing executable, broken metadata, permissions) stay errors.
+pub fn find_toplevel(path: &Path) -> Result<Option<PathBuf>> {
     let output = git_command(path)
+        // Keep the one expected diagnostic stable across system locales.
+        .env("LC_ALL", "C")
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("failed to spawn git — is it installed?")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "'{}' is not inside a git repository: {}",
-            path.display(),
-            stderr.trim()
-        );
+        if stderr.starts_with("fatal: not a git repository") {
+            return Ok(None);
+        }
+        bail!("git discovery in '{}': {}", path.display(), stderr.trim());
     }
     let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(PathBuf::from(top))
+    Ok(Some(PathBuf::from(top)))
 }
